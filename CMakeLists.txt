@@ -12,6 +12,7 @@ add_executable(opengl_ascii
   src/mesh.cpp
   src/framebuffer.cpp
   src/glyph_atlas.cpp
+  src/texture.cpp
 )
 
 # GLAD
@@ -23,6 +24,9 @@ target_sources(opengl_ascii PRIVATE
 
 # GLM (header-only)
 target_include_directories(opengl_ascii PRIVATE external/glm)
+
+# stb (header-only image loading/writing)
+target_include_directories(opengl_ascii PRIVATE external/stb)
 
 # Shaders are read from the source tree at runtime
 target_compile_definitions(opengl_ascii PRIVATE
