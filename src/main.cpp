@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <iostream>
+#include <utility>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -42,6 +43,8 @@ struct AppState
 {
   Framebuffer *scene = nullptr;
   Framebuffer *cells = nullptr;
+  Texture *image = nullptr;
+  bool useImage = false;
   View view = View::Ascii;
   ColorMode colorMode = ColorMode::Truecolor;
   float gain = kDefaultGain;
@@ -56,13 +59,15 @@ static glm::ivec2 gridSize(int width, int height)
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
   char title[128];
-  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, gain %.2f",
+  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, %s, gain %.2f",
+           state.useImage ? "image" : "sphere",
            kColorModeNames[static_cast<int>(state.colorMode)], state.gain);
   glfwSetWindowTitle(window, title);
 }
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
+void drop_callback(GLFWwindow *window, int count, const char **paths);
 
 int main(int argc, char **argv)
 {
@@ -89,6 +94,7 @@ int main(int argc, char **argv)
 
   glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
   glfwSetKeyCallback(window, key_callback);
+  glfwSetDropCallback(window, drop_callback);
 
   // Scope so GL objects are destroyed before the context goes away.
   {
@@ -103,7 +109,6 @@ int main(int argc, char **argv)
     state.scene = &sceneFbo;
     state.cells = &cellFbo;
     glfwSetWindowUserPointer(window, &state);
-    updateTitle(window, state);
 
     Shader sceneShader("scene.vert", "scene.frag");
     Shader cellShader("fullscreen.vert", "cells.frag");
@@ -120,6 +125,9 @@ int main(int argc, char **argv)
     {
       image = Texture(argv[1]);
     }
+    state.image = &image;
+    state.useImage = image.valid();
+    updateTitle(window, state);
 
     // Core profile requires a bound VAO even for vertex-less draws.
     GLuint emptyVao;
@@ -135,7 +143,7 @@ int main(int argc, char **argv)
       glClearColor(kBackground.r, kBackground.g, kBackground.b, 1.0f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      if (image.valid())
+      if (state.useImage)
       {
         glDisable(GL_DEPTH_TEST);
         imageShader.use();
@@ -264,9 +272,37 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   {
     state->view = static_cast<View>((static_cast<int>(state->view) + 1) % 3);
   }
+  else if (key == GLFW_KEY_S)
+  {
+    // Only switch to the image when one has been loaded.
+    state->useImage = !state->useImage && state->image && state->image->valid();
+    updateTitle(window, *state);
+  }
   else if (key == GLFW_KEY_C)
   {
     state->colorMode = static_cast<ColorMode>((static_cast<int>(state->colorMode) + 1) % 4);
     updateTitle(window, *state);
+  }
+}
+
+void drop_callback(GLFWwindow *window, int count, const char **paths)
+{
+  auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+  if (!state || !state->image)
+  {
+    return;
+  }
+
+  // Use the first dropped file that loads as an image.
+  for (int i = 0; i < count; ++i)
+  {
+    Texture loaded(paths[i]);
+    if (loaded.valid())
+    {
+      *state->image = std::move(loaded);
+      state->useImage = true;
+      updateTitle(window, *state);
+      return;
+    }
   }
 }
