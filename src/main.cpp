@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <iostream>
+#include <string>
 #include <utility>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -10,6 +11,7 @@
 #include "glyph_atlas.h"
 #include "levels.h"
 #include "mesh.h"
+#include "png_export.h"
 #include "shader.h"
 #include "texture.h"
 
@@ -51,6 +53,7 @@ struct AppState
   float gain = kDefaultGain;
   float contrast = 1.0f;
   bool autoLevels = false;
+  bool exportRequested = false;
 };
 
 static glm::ivec2 gridSize(int width, int height)
@@ -142,6 +145,25 @@ int main(int argc, char **argv)
     // Smoothed luminance range, so auto-levels doesn't flicker on a moving scene.
     glm::vec2 levels(0.0f, 1.0f);
 
+    // Binds the glyph shader and its inputs; the caller issues the draw.
+    auto setupAscii = [&]()
+    {
+      glyphShader.use();
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
+      glyphShader.setInt("uCells", 0);
+      glActiveTexture(GL_TEXTURE1);
+      glBindTexture(GL_TEXTURE_2D, atlas.texture());
+      glActiveTexture(GL_TEXTURE0);
+      glyphShader.setInt("uAtlas", 1);
+      glyphShader.setIVec2("uCellSize", kCellSize);
+      glyphShader.setInt("uGlyphCount", atlas.glyphCount());
+      glyphShader.setFloat("uGain", state.gain);
+      glyphShader.setVec2("uLevels", levels);
+      glyphShader.setFloat("uContrast", state.contrast);
+      glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
+    };
+
     while (!glfwWindowShouldClose(window))
     {
       // Scene pass -> offscreen FBO
@@ -198,6 +220,22 @@ int main(int argc, char **argv)
       }
       levels = glm::mix(levels, targetLevels, 0.15f);
 
+      // Export: render the ASCII view at window size into its own target
+      if (state.exportRequested)
+      {
+        state.exportRequested = false;
+        Framebuffer exportFbo(sceneFbo.width(), sceneFbo.height(), false);
+        exportFbo.bind();
+        setupAscii();
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        std::string path = timestampedPngName();
+        if (writePng(exportFbo, path))
+        {
+          std::cout << "Exported " << path << std::endl;
+        }
+      }
+
       // Present pass -> window
       Framebuffer::unbind();
       glViewport(0, 0, sceneFbo.width(), sceneFbo.height());
@@ -205,19 +243,7 @@ int main(int argc, char **argv)
 
       if (state.view == View::Ascii)
       {
-        glyphShader.use();
-        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
-        glyphShader.setInt("uCells", 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, atlas.texture());
-        glActiveTexture(GL_TEXTURE0);
-        glyphShader.setInt("uAtlas", 1);
-        glyphShader.setIVec2("uCellSize", kCellSize);
-        glyphShader.setInt("uGlyphCount", atlas.glyphCount());
-        glyphShader.setFloat("uGain", state.gain);
-        glyphShader.setVec2("uLevels", levels);
-        glyphShader.setFloat("uContrast", state.contrast);
-        glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
+        setupAscii();
       }
       else if (state.view == View::Mosaic)
       {
@@ -301,6 +327,10 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
     // Only switch to the image when one has been loaded.
     state->useImage = !state->useImage && state->image && state->image->valid();
     updateTitle(window, *state);
+  }
+  else if (key == GLFW_KEY_E)
+  {
+    state->exportRequested = true;
   }
   else if (key == GLFW_KEY_A)
   {
