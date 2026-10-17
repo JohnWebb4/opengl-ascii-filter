@@ -70,3 +70,7 @@ Testing/
 
 # GLFW
 external/
+
+# Images
+images/
+ascii_*
