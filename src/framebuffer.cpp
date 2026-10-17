@@ -2,7 +2,8 @@
 
 #include <iostream>
 
-Framebuffer::Framebuffer(int width, int height) : width_(width), height_(height)
+Framebuffer::Framebuffer(int width, int height, bool withDepth)
+    : width_(width), height_(height), withDepth_(withDepth)
 {
   glGenFramebuffers(1, &fbo_);
   glGenTextures(1, &color_);
@@ -26,12 +27,18 @@ void Framebuffer::allocate()
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-  glBindRenderbuffer(GL_RENDERBUFFER, depth_);
-  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
+  if (withDepth_)
+  {
+    glBindRenderbuffer(GL_RENDERBUFFER, depth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
+  }
 
   glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_, 0);
-  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+  if (withDepth_)
+  {
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+  }
 
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
   {

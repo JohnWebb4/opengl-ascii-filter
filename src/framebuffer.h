@@ -6,7 +6,7 @@
 class Framebuffer
 {
 public:
-  Framebuffer(int width, int height);
+  Framebuffer(int width, int height, bool withDepth = true);
   ~Framebuffer();
 
   Framebuffer(const Framebuffer &) = delete;
@@ -25,4 +25,5 @@ private:
 
   GLuint fbo_ = 0, color_ = 0, depth_ = 0;
   int width_, height_;
+  bool withDepth_;
 };

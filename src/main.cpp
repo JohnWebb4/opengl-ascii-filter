@@ -8,8 +8,24 @@
 #include "mesh.h"
 #include "shader.h"
 
+// Character cell footprint in window pixels.
+static const glm::ivec2 kCellSize(8, 16);
+
+struct AppState
+{
+  Framebuffer *scene = nullptr;
+  Framebuffer *cells = nullptr;
+  bool showCells = true;
+};
+
+static glm::ivec2 gridSize(int width, int height)
+{
+  return glm::ivec2((width + kCellSize.x - 1) / kCellSize.x,
+                    (height + kCellSize.y - 1) / kCellSize.y);
+}
+
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
-void processInput(GLFWwindow *window);
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
 
 int main(void)
 {
@@ -35,16 +51,25 @@ int main(void)
   }
 
   glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+  glfwSetKeyCallback(window, key_callback);
 
   // Scope so GL objects are destroyed before the context goes away.
   {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
+    glm::ivec2 grid = gridSize(width, height);
     Framebuffer sceneFbo(width, height);
-    glfwSetWindowUserPointer(window, &sceneFbo);
+    Framebuffer cellFbo(grid.x, grid.y, false);
+
+    AppState state;
+    state.scene = &sceneFbo;
+    state.cells = &cellFbo;
+    glfwSetWindowUserPointer(window, &state);
 
     Shader sceneShader("scene.vert", "scene.frag");
+    Shader cellShader("fullscreen.vert", "cells.frag");
+    Shader mosaicShader("fullscreen.vert", "mosaic.frag");
     Shader blitShader("fullscreen.vert", "blit.frag");
     Mesh sphere = Mesh::sphere(32, 64);
 
@@ -56,15 +81,6 @@ int main(void)
 
     while (!glfwWindowShouldClose(window))
     {
-      processInput(window);
-
-      // Skip rendering while minimized.
-      if (sceneFbo.width() == 0 || sceneFbo.height() == 0)
-      {
-        glfwWaitEvents();
-        continue;
-      }
-
       // Scene pass -> offscreen FBO
       sceneFbo.bind();
       glEnable(GL_DEPTH_TEST);
@@ -83,17 +99,36 @@ int main(void)
       sceneShader.setVec3("uColor", glm::vec3(0.9f, 0.5f, 0.2f));
       sphere.draw();
 
+      glDisable(GL_DEPTH_TEST);
+      glBindVertexArray(emptyVao);
+
+      // Cell pass -> one texel per character cell
+      cellFbo.bind();
+      cellShader.use();
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
+      cellShader.setInt("uScene", 0);
+      cellShader.setIVec2("uCellSize", kCellSize);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+
       // Present pass -> window
       Framebuffer::unbind();
       glViewport(0, 0, sceneFbo.width(), sceneFbo.height());
-      glDisable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT);
 
-      blitShader.use();
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
-      blitShader.setInt("uScene", 0);
-      glBindVertexArray(emptyVao);
+      if (state.showCells)
+      {
+        mosaicShader.use();
+        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
+        mosaicShader.setInt("uCells", 0);
+        mosaicShader.setIVec2("uCellSize", kCellSize);
+      }
+      else
+      {
+        blitShader.use();
+        glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
+        blitShader.setInt("uScene", 0);
+      }
       glDrawArrays(GL_TRIANGLES, 0, 3);
       glBindVertexArray(0);
 
@@ -111,17 +146,29 @@ int main(void)
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 {
-  auto *fbo = static_cast<Framebuffer *>(glfwGetWindowUserPointer(window));
-  if (fbo && width > 0 && height > 0)
+  auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+  if (state && width > 0 && height > 0)
   {
-    fbo->resize(width, height);
+    glm::ivec2 grid = gridSize(width, height);
+    state->scene->resize(width, height);
+    state->cells->resize(grid.x, grid.y);
   }
 }
 
-void processInput(GLFWwindow *window)
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
-  if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+  if (action != GLFW_PRESS)
+  {
+    return;
+  }
+
+  if (key == GLFW_KEY_ESCAPE)
   {
     glfwSetWindowShouldClose(window, true);
+  }
+  else if (key == GLFW_KEY_M)
+  {
+    auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+    state->showCells = !state->showCells;
   }
 }
