@@ -58,6 +58,13 @@ void Framebuffer::resize(int width, int height)
   allocate();
 }
 
+void Framebuffer::setFilter(GLenum filter)
+{
+  glBindTexture(GL_TEXTURE_2D, color_);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+}
+
 void Framebuffer::bind() const
 {
   glBindFramebuffer(GL_FRAMEBUFFER, fbo_);

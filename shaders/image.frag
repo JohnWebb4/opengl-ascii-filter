@@ -19,12 +19,9 @@ void main()
 
   vec2 uv = (vUV - 0.5) / size + 0.5;
 
-  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
-  {
-    FragColor = vec4(uBackground, 1.0);
-  }
-  else
-  {
-    FragColor = vec4(texture(uImage, uv).rgb, 1.0);
-  }
+  // Sampled outside the branch: mip selection needs derivatives from uniform flow.
+  vec3 color = texture(uImage, uv).rgb;
+
+  bool outside = any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)));
+  FragColor = vec4(outside ? uBackground : color, 1.0);
 }

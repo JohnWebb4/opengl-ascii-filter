@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <iostream>
 #include <string>
@@ -15,10 +17,10 @@
 #include "shader.h"
 #include "texture.h"
 
-// Character cell footprint in window pixels.
+// Character cell footprint in canvas pixels.
 static const glm::ivec2 kCellSize(GlyphAtlas::kGlyphWidth, GlyphAtlas::kGlyphHeight);
 
-// Clear color of the scene target, also the bars around a letterboxed image.
+// Clear color of the scene target, also the bars around the canvas in the window.
 static const glm::vec3 kBackground(0.05f, 0.05f, 0.08f);
 
 // The orange test sphere tops out well below full luminance.
@@ -42,10 +44,12 @@ enum class ColorMode
 
 static const char *kColorModeNames[] = {"mono", "ANSI 16", "ANSI 256", "truecolor"};
 
+static const int kDefaultColumns = 120;
+static const int kMinColumns = 20;
+static const int kMaxColumns = 400;
+
 struct AppState
 {
-  Framebuffer *scene = nullptr;
-  Framebuffer *cells = nullptr;
   Texture *image = nullptr;
   bool useImage = false;
   View view = View::Ascii;
@@ -54,25 +58,38 @@ struct AppState
   float contrast = 1.0f;
   bool autoLevels = false;
   bool exportRequested = false;
+  int columns = kDefaultColumns;
+  glm::ivec2 grid{0, 0};  // cells across and down, set each frame
 };
 
-static glm::ivec2 gridSize(int width, int height)
+// Cells across and down for content of the given aspect ratio (width / height).
+// Rows follow from the column count and the cell shape; the grid is shrunk if
+// the canvas would exceed the largest texture the GPU supports.
+static glm::ivec2 canvasGrid(int columns, float aspect, int maxTexture)
 {
-  return glm::ivec2((width + kCellSize.x - 1) / kCellSize.x,
-                    (height + kCellSize.y - 1) / kCellSize.y);
+  int cols = columns;
+  int rows = std::max(1, static_cast<int>(std::lround(cols / aspect * kCellSize.x / kCellSize.y)));
+
+  int maxRows = maxTexture / kCellSize.y;
+  if (rows > maxRows)
+  {
+    cols = std::max(1, cols * maxRows / rows);
+    rows = maxRows;
+  }
+  cols = std::min(cols, maxTexture / kCellSize.x);
+  return glm::ivec2(cols, rows);
 }
 
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
-  char title[128];
-  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, %s, gain %.2f, contrast %.2f, auto-levels %s",
-           state.useImage ? "image" : "sphere",
+  char title[192];
+  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s %dx%d, %s, gain %.2f, contrast %.2f, auto-levels %s",
+           state.useImage ? "image" : "sphere", state.grid.x, state.grid.y,
            kColorModeNames[static_cast<int>(state.colorMode)], state.gain, state.contrast,
            state.autoLevels ? "on" : "off");
   glfwSetWindowTitle(window, title);
 }
 
-void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
 void drop_callback(GLFWwindow *window, int count, const char **paths);
 
@@ -83,7 +100,7 @@ int main(int argc, char **argv)
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  GLFWwindow *window = glfwCreateWindow(800, 600, "OpenGL ASCII Filter", NULL, NULL);
+  GLFWwindow *window = glfwCreateWindow(1280, 720, "OpenGL ASCII Filter", NULL, NULL);
   if (window == NULL)
   {
     std::cout << "Failed to create GLFW window" << std::endl;
@@ -99,22 +116,23 @@ int main(int argc, char **argv)
     return -1;
   }
 
-  glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
   glfwSetKeyCallback(window, key_callback);
   glfwSetDropCallback(window, drop_callback);
 
   // Scope so GL objects are destroyed before the context goes away.
   {
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
+    int maxTexture;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
 
-    glm::ivec2 grid = gridSize(width, height);
-    Framebuffer sceneFbo(width, height);
-    Framebuffer cellFbo(grid.x, grid.y, false);
+    // All three are sized to the canvas (the character grid in pixels) at the
+    // top of every frame; the window only displays the result.
+    Framebuffer sceneFbo(1, 1);
+    Framebuffer cellFbo(1, 1, false);
+    Framebuffer canvasFbo(1, 1, false);
+    // Glyph pixels should stay sharp when the canvas is scaled to the window.
+    canvasFbo.setFilter(GL_NEAREST);
 
     AppState state;
-    state.scene = &sceneFbo;
-    state.cells = &cellFbo;
     glfwSetWindowUserPointer(window, &state);
 
     Shader sceneShader("scene.vert", "scene.frag");
@@ -134,7 +152,6 @@ int main(int argc, char **argv)
     }
     state.image = &image;
     state.useImage = image.valid();
-    updateTitle(window, state);
 
     // Core profile requires a bound VAO even for vertex-less draws.
     GLuint emptyVao;
@@ -164,8 +181,57 @@ int main(int argc, char **argv)
       glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
     };
 
+    // Draws one of the views into the canvas; the caller has the VAO bound.
+    auto renderCanvas = [&](View view)
+    {
+      canvasFbo.bind();
+      glActiveTexture(GL_TEXTURE0);
+      if (view == View::Ascii)
+      {
+        setupAscii();
+      }
+      else if (view == View::Mosaic)
+      {
+        mosaicShader.use();
+        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
+        mosaicShader.setInt("uCells", 0);
+        mosaicShader.setIVec2("uCellSize", kCellSize);
+      }
+      else
+      {
+        blitShader.use();
+        glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
+        blitShader.setInt("uScene", 0);
+      }
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+    };
+
     while (!glfwWindowShouldClose(window))
     {
+      int windowWidth, windowHeight;
+      glfwGetFramebufferSize(window, &windowWidth, &windowHeight);
+      if (windowWidth == 0 || windowHeight == 0)
+      {
+        // Minimized
+        glfwWaitEvents();
+        continue;
+      }
+
+      // Size the canvas: an image sets the aspect, otherwise the window does
+      float contentAspect = state.useImage
+                                ? static_cast<float>(image.width()) / image.height()
+                                : static_cast<float>(windowWidth) / windowHeight;
+      glm::ivec2 grid = canvasGrid(state.columns, contentAspect, maxTexture);
+      if (grid != state.grid)
+      {
+        state.grid = grid;
+        updateTitle(window, state);
+      }
+      glm::ivec2 canvasSize = grid * kCellSize;
+      sceneFbo.resize(canvasSize.x, canvasSize.y);
+      cellFbo.resize(grid.x, grid.y);
+      canvasFbo.resize(canvasSize.x, canvasSize.y);
+
       // Scene pass -> offscreen FBO
       sceneFbo.bind();
       glEnable(GL_DEPTH_TEST);
@@ -180,7 +246,8 @@ int main(int argc, char **argv)
         glBindTexture(GL_TEXTURE_2D, image.id());
         imageShader.setInt("uImage", 0);
         imageShader.setFloat("uImageAspect", static_cast<float>(image.width()) / image.height());
-        imageShader.setFloat("uViewAspect", static_cast<float>(sceneFbo.width()) / sceneFbo.height());
+        // The canvas aspect only differs from the image's by cell rounding, so fill it.
+        imageShader.setFloat("uViewAspect", static_cast<float>(image.width()) / image.height());
         imageShader.setVec3("uBackground", kBackground);
         glBindVertexArray(emptyVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -220,44 +287,33 @@ int main(int argc, char **argv)
       }
       levels = glm::mix(levels, targetLevels, 0.15f);
 
-      // Export: render the ASCII view at window size into its own target
+      // Export: always the ASCII view, at canvas size
       if (state.exportRequested)
       {
         state.exportRequested = false;
-        Framebuffer exportFbo(sceneFbo.width(), sceneFbo.height(), false);
-        exportFbo.bind();
-        setupAscii();
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        renderCanvas(View::Ascii);
 
         std::string path = timestampedPngName();
-        if (writePng(exportFbo, path))
+        if (writePng(canvasFbo, path))
         {
-          std::cout << "Exported " << path << std::endl;
+          std::cout << "Exported " << path << " (" << canvasSize.x << "x" << canvasSize.y << ")" << std::endl;
         }
       }
 
-      // Present pass -> window
+      renderCanvas(state.view);
+
+      // Present pass -> window, canvas fitted with bars
       Framebuffer::unbind();
-      glViewport(0, 0, sceneFbo.width(), sceneFbo.height());
+      glViewport(0, 0, windowWidth, windowHeight);
       glClear(GL_COLOR_BUFFER_BIT);
 
-      if (state.view == View::Ascii)
-      {
-        setupAscii();
-      }
-      else if (state.view == View::Mosaic)
-      {
-        mosaicShader.use();
-        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
-        mosaicShader.setInt("uCells", 0);
-        mosaicShader.setIVec2("uCellSize", kCellSize);
-      }
-      else
-      {
-        blitShader.use();
-        glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
-        blitShader.setInt("uScene", 0);
-      }
+      imageShader.use();
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, canvasFbo.colorTexture());
+      imageShader.setInt("uImage", 0);
+      imageShader.setFloat("uImageAspect", static_cast<float>(canvasSize.x) / canvasSize.y);
+      imageShader.setFloat("uViewAspect", static_cast<float>(windowWidth) / windowHeight);
+      imageShader.setVec3("uBackground", kBackground);
       glDrawArrays(GL_TRIANGLES, 0, 3);
       glBindVertexArray(0);
 
@@ -271,17 +327,6 @@ int main(int argc, char **argv)
   glfwTerminate();
 
   return 0;
-}
-
-void framebuffer_size_callback(GLFWwindow *window, int width, int height)
-{
-  auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
-  if (state && width > 0 && height > 0)
-  {
-    glm::ivec2 grid = gridSize(width, height);
-    state->scene->resize(width, height);
-    state->cells->resize(grid.x, grid.y);
-  }
 }
 
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
@@ -306,6 +351,13 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
     float delta = key == GLFW_KEY_RIGHT ? 0.05f : -0.05f;
     state->contrast = glm::clamp(state->contrast + delta, 0.2f, 4.0f);
     updateTitle(window, *state);
+    return;
+  }
+
+  if (key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET)
+  {
+    int delta = key == GLFW_KEY_RIGHT_BRACKET ? 10 : -10;
+    state->columns = glm::clamp(state->columns + delta, kMinColumns, kMaxColumns);
     return;
   }
 

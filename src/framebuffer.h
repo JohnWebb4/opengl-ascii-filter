@@ -13,6 +13,8 @@ public:
   Framebuffer &operator=(const Framebuffer &) = delete;
 
   void resize(int width, int height);
+  // Sets both min and mag filters of the color texture; survives resize.
+  void setFilter(GLenum filter);
   void bind() const;
   static void unbind();
 
