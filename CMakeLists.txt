@@ -12,6 +12,7 @@ add_executable(opengl_ascii
   src/mesh.cpp
   src/framebuffer.cpp
   src/glyph_atlas.cpp
+  src/levels.cpp
   src/texture.cpp
 )
 

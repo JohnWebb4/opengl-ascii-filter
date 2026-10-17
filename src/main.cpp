@@ -8,6 +8,7 @@
 
 #include "framebuffer.h"
 #include "glyph_atlas.h"
+#include "levels.h"
 #include "mesh.h"
 #include "shader.h"
 #include "texture.h"
@@ -48,6 +49,8 @@ struct AppState
   View view = View::Ascii;
   ColorMode colorMode = ColorMode::Truecolor;
   float gain = kDefaultGain;
+  float contrast = 1.0f;
+  bool autoLevels = false;
 };
 
 static glm::ivec2 gridSize(int width, int height)
@@ -59,9 +62,10 @@ static glm::ivec2 gridSize(int width, int height)
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
   char title[128];
-  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, %s, gain %.2f",
+  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, %s, gain %.2f, contrast %.2f, auto-levels %s",
            state.useImage ? "image" : "sphere",
-           kColorModeNames[static_cast<int>(state.colorMode)], state.gain);
+           kColorModeNames[static_cast<int>(state.colorMode)], state.gain, state.contrast,
+           state.autoLevels ? "on" : "off");
   glfwSetWindowTitle(window, title);
 }
 
@@ -135,6 +139,9 @@ int main(int argc, char **argv)
 
     const glm::vec3 cameraPos(0.0f, 0.0f, 3.0f);
 
+    // Smoothed luminance range, so auto-levels doesn't flicker on a moving scene.
+    glm::vec2 levels(0.0f, 1.0f);
+
     while (!glfwWindowShouldClose(window))
     {
       // Scene pass -> offscreen FBO
@@ -183,6 +190,14 @@ int main(int argc, char **argv)
       cellShader.setIVec2("uCellSize", kCellSize);
       glDrawArrays(GL_TRIANGLES, 0, 3);
 
+      // Auto-levels: ease toward the measured range, or back to full range when off
+      glm::vec2 targetLevels(0.0f, 1.0f);
+      if (state.autoLevels)
+      {
+        estimateLevels(cellFbo, targetLevels.x, targetLevels.y);
+      }
+      levels = glm::mix(levels, targetLevels, 0.15f);
+
       // Present pass -> window
       Framebuffer::unbind();
       glViewport(0, 0, sceneFbo.width(), sceneFbo.height());
@@ -200,6 +215,8 @@ int main(int argc, char **argv)
         glyphShader.setIVec2("uCellSize", kCellSize);
         glyphShader.setInt("uGlyphCount", atlas.glyphCount());
         glyphShader.setFloat("uGain", state.gain);
+        glyphShader.setVec2("uLevels", levels);
+        glyphShader.setFloat("uContrast", state.contrast);
         glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
       }
       else if (state.view == View::Mosaic)
@@ -250,11 +267,18 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
 
   auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
 
-  // Gain adjusts on key repeat too, so holding the key sweeps it.
+  // Gain and contrast adjust on key repeat too, so holding the key sweeps them.
   if (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN)
   {
     float delta = key == GLFW_KEY_UP ? 0.05f : -0.05f;
     state->gain = glm::clamp(state->gain + delta, 0.1f, 5.0f);
+    updateTitle(window, *state);
+    return;
+  }
+  if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_LEFT)
+  {
+    float delta = key == GLFW_KEY_RIGHT ? 0.05f : -0.05f;
+    state->contrast = glm::clamp(state->contrast + delta, 0.2f, 4.0f);
     updateTitle(window, *state);
     return;
   }
@@ -276,6 +300,11 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   {
     // Only switch to the image when one has been loaded.
     state->useImage = !state->useImage && state->image && state->image->valid();
+    updateTitle(window, *state);
+  }
+  else if (key == GLFW_KEY_A)
+  {
+    state->autoLevels = !state->autoLevels;
     updateTitle(window, *state);
   }
   else if (key == GLFW_KEY_C)

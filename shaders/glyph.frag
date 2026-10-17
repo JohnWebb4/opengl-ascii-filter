@@ -10,6 +10,8 @@ uniform sampler2D uAtlas;  // glyphs left to right by increasing ink
 uniform ivec2 uCellSize;
 uniform int uGlyphCount;
 uniform float uGain;       // scales luminance before picking a glyph
+uniform vec2 uLevels;      // luminance range stretched to 0-1 (black point, white point)
+uniform float uContrast;   // scales luminance around mid-gray
 uniform int uColorMode;
 
 out vec4 FragColor;
@@ -73,7 +75,9 @@ void main()
   ivec2 local = px - cell * uCellSize;
 
   vec4 cellData = texelFetch(uCells, cell, 0);
-  float luma = clamp(cellData.a * uGain, 0.0, 0.999);
+  float luma = (cellData.a - uLevels.x) / (uLevels.y - uLevels.x);
+  luma = (luma * uGain - 0.5) * uContrast + 0.5;
+  luma = clamp(luma, 0.0, 0.999);
   int glyph = int(luma * float(uGlyphCount));
 
   // Window y points up but the atlas stores the top glyph row first.
