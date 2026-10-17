@@ -134,6 +134,12 @@ int Texture::frameAt(double seconds) const
   return std::min(static_cast<int>(it - frameEnds_.begin()), frameCount_ - 1);
 }
 
+double Texture::frameDuration(int frame) const
+{
+  frame = std::clamp(frame, 0, std::max(frameCount_ - 1, 0));
+  return frameEnds_.empty() ? 0.0 : frameEnds_[frame] - frameStart(frame);
+}
+
 double Texture::frameStart(int frame) const
 {
   return frame <= 0 ? 0.0 : frameEnds_[std::min(frame, frameCount_) - 1];

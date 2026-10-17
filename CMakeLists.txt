@@ -11,6 +11,7 @@ add_executable(opengl_ascii
   src/shader.cpp
   src/mesh.cpp
   src/framebuffer.cpp
+  src/gif_export.cpp
   src/glyph_atlas.cpp
   src/levels.cpp
   src/png_export.cpp
@@ -27,7 +28,7 @@ target_sources(opengl_ascii PRIVATE
 # GLM (header-only)
 target_include_directories(opengl_ascii PRIVATE external/glm)
 
-# stb (header-only image loading/writing)
+# stb and gif.h (header-only image loading/writing)
 target_include_directories(opengl_ascii PRIVATE external/stb)
 
 # Shaders are read from the source tree at runtime

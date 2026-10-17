@@ -34,6 +34,8 @@ public:
   int frameAt(double seconds) const;
   // Time in seconds at which the given layer starts.
   double frameStart(int frame) const;
+  // How long the given layer is shown, in seconds.
+  double frameDuration(int frame) const;
 
 private:
   GLuint id_ = 0;

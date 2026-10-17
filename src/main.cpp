@@ -10,6 +10,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "framebuffer.h"
+#include "gif_export.h"
 #include "glyph_atlas.h"
 #include "levels.h"
 #include "mesh.h"
@@ -48,6 +49,10 @@ static const int kDefaultColumns = 120;
 static const int kMinColumns = 20;
 static const int kMaxColumns = 400;
 
+// Chat sites shrink large uploads, which blurs the 1-2 pixel glyph strokes.
+// A 960 px wide export came out distorted while a 320 px one was fine.
+static const int kShareWidthLimit = 400;
+
 struct AppState
 {
   Texture *image = nullptr;
@@ -58,6 +63,7 @@ struct AppState
   float contrast = 1.0f;
   bool autoLevels = false;
   bool exportRequested = false;
+  bool gifExportRequested = false;
   int columns = kDefaultColumns;
   glm::ivec2 grid{0, 0};  // cells across and down, set each frame
   double animTime = 0.0;  // seconds into an animated image
@@ -82,6 +88,21 @@ static glm::ivec2 canvasGrid(int columns, float aspect, int maxTexture)
   return glm::ivec2(cols, rows);
 }
 
+static bool isWideForSharing(const glm::ivec2 &canvasSize)
+{
+  return canvasSize.x > kShareWidthLimit;
+}
+
+static void warnIfWide(const glm::ivec2 &canvasSize)
+{
+  if (isWideForSharing(canvasSize))
+  {
+    std::cout << "Warning: the export is " << canvasSize.x << " px wide. Sites that shrink uploads can blur the glyphs; "
+              << kShareWidthLimit / kCellSize.x << " columns or fewer (" << kShareWidthLimit
+              << " px) stays sharp." << std::endl;
+  }
+}
+
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
   char source[64] = "sphere";
@@ -102,9 +123,12 @@ static void updateTitle(GLFWwindow *window, const AppState &state)
     }
   }
 
-  char title[256];
-  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s %dx%d, %s, gain %.2f, contrast %.2f, auto-levels %s",
-           source, state.grid.x, state.grid.y,
+  char title[320];
+  glm::ivec2 canvasSize = state.grid * kCellSize;
+  snprintf(title, sizeof(title),
+           "OpenGL ASCII Filter - %s %dx%d cells, export %dx%d px%s, %s, gain %.2f, contrast %.2f, auto-levels %s",
+           source, state.grid.x, state.grid.y, canvasSize.x, canvasSize.y,
+           isWideForSharing(canvasSize) ? " (wide)" : "",
            kColorModeNames[static_cast<int>(state.colorMode)], state.gain, state.contrast,
            state.autoLevels ? "on" : "off");
   glfwSetWindowTitle(window, title);
@@ -227,6 +251,57 @@ int main(int argc, char **argv)
       glDrawArrays(GL_TRIANGLES, 0, 3);
     };
 
+    // Scene pass and cell pass for one frame: draws the sphere, or the given
+    // layer of the image, then reduces it to one texel per character cell.
+    auto renderFrame = [&](int layer)
+    {
+      // Scene pass -> offscreen FBO
+      sceneFbo.bind();
+      glEnable(GL_DEPTH_TEST);
+      glClearColor(kBackground.r, kBackground.g, kBackground.b, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+      if (state.useImage)
+      {
+        glDisable(GL_DEPTH_TEST);
+        sourceShader.use();
+        glActiveTexture(GL_TEXTURE0);
+        // Frames are layers of an array texture; stills have just one.
+        glBindTexture(GL_TEXTURE_2D_ARRAY, image.id());
+        sourceShader.setInt("uSource", 0);
+        sourceShader.setInt("uLayer", layer);
+        sourceShader.setVec3("uBackground", kBackground);
+        glBindVertexArray(emptyVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+      }
+      else
+      {
+        float t = static_cast<float>(glfwGetTime());
+        float aspect = static_cast<float>(sceneFbo.width()) / sceneFbo.height();
+
+        sceneShader.use();
+        sceneShader.setMat4("uModel", glm::rotate(glm::mat4(1.0f), t * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f)));
+        sceneShader.setMat4("uView", glm::lookAt(cameraPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+        sceneShader.setMat4("uProjection", glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f));
+        sceneShader.setVec3("uLightDir", glm::normalize(glm::vec3(-0.6f, -0.5f, -0.7f)));
+        sceneShader.setVec3("uViewPos", cameraPos);
+        sceneShader.setVec3("uColor", glm::vec3(0.9f, 0.5f, 0.2f));
+        sphere.draw();
+      }
+
+      glDisable(GL_DEPTH_TEST);
+      glBindVertexArray(emptyVao);
+
+      // Cell pass -> one texel per character cell
+      cellFbo.bind();
+      cellShader.use();
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
+      cellShader.setInt("uScene", 0);
+      cellShader.setIVec2("uCellSize", kCellSize);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+    };
+
     double lastTime = glfwGetTime();
 
     while (!glfwWindowShouldClose(window))
@@ -262,51 +337,7 @@ int main(int argc, char **argv)
       cellFbo.resize(grid.x, grid.y);
       canvasFbo.resize(canvasSize.x, canvasSize.y);
 
-      // Scene pass -> offscreen FBO
-      sceneFbo.bind();
-      glEnable(GL_DEPTH_TEST);
-      glClearColor(kBackground.r, kBackground.g, kBackground.b, 1.0f);
-      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-      if (state.useImage)
-      {
-        glDisable(GL_DEPTH_TEST);
-        sourceShader.use();
-        glActiveTexture(GL_TEXTURE0);
-        // Frames are layers of an array texture; stills have just one.
-        glBindTexture(GL_TEXTURE_2D_ARRAY, image.id());
-        sourceShader.setInt("uSource", 0);
-        sourceShader.setInt("uLayer", image.frameAt(state.animTime));
-        sourceShader.setVec3("uBackground", kBackground);
-        glBindVertexArray(emptyVao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-      }
-      else
-      {
-        float t = static_cast<float>(glfwGetTime());
-        float aspect = static_cast<float>(sceneFbo.width()) / sceneFbo.height();
-
-        sceneShader.use();
-        sceneShader.setMat4("uModel", glm::rotate(glm::mat4(1.0f), t * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f)));
-        sceneShader.setMat4("uView", glm::lookAt(cameraPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
-        sceneShader.setMat4("uProjection", glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f));
-        sceneShader.setVec3("uLightDir", glm::normalize(glm::vec3(-0.6f, -0.5f, -0.7f)));
-        sceneShader.setVec3("uViewPos", cameraPos);
-        sceneShader.setVec3("uColor", glm::vec3(0.9f, 0.5f, 0.2f));
-        sphere.draw();
-      }
-
-      glDisable(GL_DEPTH_TEST);
-      glBindVertexArray(emptyVao);
-
-      // Cell pass -> one texel per character cell
-      cellFbo.bind();
-      cellShader.use();
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
-      cellShader.setInt("uScene", 0);
-      cellShader.setIVec2("uCellSize", kCellSize);
-      glDrawArrays(GL_TRIANGLES, 0, 3);
+      renderFrame(state.useImage ? image.frameAt(state.animTime) : 0);
 
       // Auto-levels: ease toward the measured range, or back to full range when off
       glm::vec2 targetLevels(0.0f, 1.0f);
@@ -320,6 +351,7 @@ int main(int argc, char **argv)
       if (state.exportRequested)
       {
         state.exportRequested = false;
+        warnIfWide(canvasSize);
         renderCanvas(View::Ascii);
 
         std::string path = timestampedPngName();
@@ -347,6 +379,56 @@ int main(int argc, char **argv)
       glBindVertexArray(0);
 
       glfwSwapBuffers(window);
+
+      // GIF export: replay every frame through the whole pipeline. It re-renders
+      // the scene and cell targets, so it runs after this frame is on screen.
+      if (state.gifExportRequested)
+      {
+        state.gifExportRequested = false;
+        if (!state.useImage || !image.animated())
+        {
+          std::cout << "GIF export needs an animated image (E exports a PNG)" << std::endl;
+        }
+        else
+        {
+          warnIfWide(canvasSize);
+          std::string path = timestampedGifName();
+          GifExporter gif(path, canvasSize.x, canvasSize.y);
+          if (!gif.ok())
+          {
+            std::cout << "Failed to write " << path << std::endl;
+          }
+          else
+          {
+            const glm::vec2 savedLevels = levels;
+            const int count = image.frameCount();
+            bool failed = false;
+            for (int frame = 0; frame < count && !failed; ++frame)
+            {
+              renderFrame(frame);
+
+              // Levels are measured per frame here, without the on-screen easing.
+              levels = glm::vec2(0.0f, 1.0f);
+              if (state.autoLevels)
+              {
+                estimateLevels(cellFbo, levels.x, levels.y);
+              }
+
+              renderCanvas(View::Ascii);
+              // Viewers ignore delays under 2 hundredths of a second.
+              int delay = std::max(2, static_cast<int>(std::lround(image.frameDuration(frame) * 100.0)));
+              failed = !gif.addFrame(canvasFbo, delay);
+
+              std::cout << "\rExporting GIF: frame " << frame + 1 << "/" << count << std::flush;
+            }
+            gif.finish();
+            levels = savedLevels;
+
+            std::cout << (failed ? "\nExport failed: " : "\nExported ") << path << " (" << canvasSize.x << "x"
+                      << canvasSize.y << ", " << count << " frames)" << std::endl;
+          }
+        }
+      }
       glfwPollEvents();
     }
 
@@ -430,6 +512,10 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   else if (key == GLFW_KEY_E)
   {
     state->exportRequested = true;
+  }
+  else if (key == GLFW_KEY_G)
+  {
+    state->gifExportRequested = true;
   }
   else if (key == GLFW_KEY_A)
   {
