@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <iostream>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -13,7 +14,7 @@
 static const glm::ivec2 kCellSize(GlyphAtlas::kGlyphWidth, GlyphAtlas::kGlyphHeight);
 
 // The orange test sphere tops out well below full luminance.
-static const float kLumaGain = 1.6f;
+static const float kDefaultGain = 1.6f;
 
 enum class View
 {
@@ -22,17 +23,38 @@ enum class View
   Scene,
 };
 
+// Values match the MODE_* constants in glyph.frag.
+enum class ColorMode
+{
+  Mono,
+  Ansi16,
+  Ansi256,
+  Truecolor,
+};
+
+static const char *kColorModeNames[] = {"mono", "ANSI 16", "ANSI 256", "truecolor"};
+
 struct AppState
 {
   Framebuffer *scene = nullptr;
   Framebuffer *cells = nullptr;
   View view = View::Ascii;
+  ColorMode colorMode = ColorMode::Truecolor;
+  float gain = kDefaultGain;
 };
 
 static glm::ivec2 gridSize(int width, int height)
 {
   return glm::ivec2((width + kCellSize.x - 1) / kCellSize.x,
                     (height + kCellSize.y - 1) / kCellSize.y);
+}
+
+static void updateTitle(GLFWwindow *window, const AppState &state)
+{
+  char title[128];
+  snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s, gain %.2f",
+           kColorModeNames[static_cast<int>(state.colorMode)], state.gain);
+  glfwSetWindowTitle(window, title);
 }
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
@@ -77,6 +99,7 @@ int main(void)
     state.scene = &sceneFbo;
     state.cells = &cellFbo;
     glfwSetWindowUserPointer(window, &state);
+    updateTitle(window, state);
 
     Shader sceneShader("scene.vert", "scene.frag");
     Shader cellShader("fullscreen.vert", "cells.frag");
@@ -140,7 +163,8 @@ int main(void)
         glyphShader.setInt("uAtlas", 1);
         glyphShader.setIVec2("uCellSize", kCellSize);
         glyphShader.setInt("uGlyphCount", atlas.glyphCount());
-        glyphShader.setFloat("uGain", kLumaGain);
+        glyphShader.setFloat("uGain", state.gain);
+        glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
       }
       else if (state.view == View::Mosaic)
       {
@@ -183,6 +207,22 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
+  if (action == GLFW_RELEASE)
+  {
+    return;
+  }
+
+  auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+
+  // Gain adjusts on key repeat too, so holding the key sweeps it.
+  if (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN)
+  {
+    float delta = key == GLFW_KEY_UP ? 0.05f : -0.05f;
+    state->gain = glm::clamp(state->gain + delta, 0.1f, 5.0f);
+    updateTitle(window, *state);
+    return;
+  }
+
   if (action != GLFW_PRESS)
   {
     return;
@@ -194,7 +234,11 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   }
   else if (key == GLFW_KEY_M)
   {
-    auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
     state->view = static_cast<View>((static_cast<int>(state->view) + 1) % 3);
+  }
+  else if (key == GLFW_KEY_C)
+  {
+    state->colorMode = static_cast<ColorMode>((static_cast<int>(state->colorMode) + 1) % 4);
+    updateTitle(window, *state);
   }
 }
