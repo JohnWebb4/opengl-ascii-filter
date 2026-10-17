@@ -60,6 +60,8 @@ struct AppState
   bool exportRequested = false;
   int columns = kDefaultColumns;
   glm::ivec2 grid{0, 0};  // cells across and down, set each frame
+  double animTime = 0.0;  // seconds into an animated image
+  bool playing = true;
 };
 
 // Cells across and down for content of the given aspect ratio (width / height).
@@ -82,9 +84,27 @@ static glm::ivec2 canvasGrid(int columns, float aspect, int maxTexture)
 
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
-  char title[192];
+  char source[64] = "sphere";
+  if (state.useImage)
+  {
+    const Texture &image = *state.image;
+    if (!image.animated())
+    {
+      snprintf(source, sizeof(source), "image");
+    }
+    else if (state.playing)
+    {
+      snprintf(source, sizeof(source), "gif, %d frames", image.frameCount());
+    }
+    else
+    {
+      snprintf(source, sizeof(source), "gif paused, frame %d/%d", image.frameAt(state.animTime) + 1, image.frameCount());
+    }
+  }
+
+  char title[256];
   snprintf(title, sizeof(title), "OpenGL ASCII Filter - %s %dx%d, %s, gain %.2f, contrast %.2f, auto-levels %s",
-           state.useImage ? "image" : "sphere", state.grid.x, state.grid.y,
+           source, state.grid.x, state.grid.y,
            kColorModeNames[static_cast<int>(state.colorMode)], state.gain, state.contrast,
            state.autoLevels ? "on" : "off");
   glfwSetWindowTitle(window, title);
@@ -140,6 +160,7 @@ int main(int argc, char **argv)
     Shader glyphShader("fullscreen.vert", "glyph.frag");
     Shader mosaicShader("fullscreen.vert", "mosaic.frag");
     Shader imageShader("fullscreen.vert", "image.frag");
+    Shader sourceShader("fullscreen.vert", "source.frag");
     Shader blitShader("fullscreen.vert", "blit.frag");
     GlyphAtlas atlas;
     Mesh sphere = Mesh::sphere(32, 64);
@@ -206,8 +227,17 @@ int main(int argc, char **argv)
       glDrawArrays(GL_TRIANGLES, 0, 3);
     };
 
+    double lastTime = glfwGetTime();
+
     while (!glfwWindowShouldClose(window))
     {
+      double now = glfwGetTime();
+      if (state.playing && state.useImage && image.animated())
+      {
+        state.animTime += now - lastTime;
+      }
+      lastTime = now;
+
       int windowWidth, windowHeight;
       glfwGetFramebufferSize(window, &windowWidth, &windowHeight);
       if (windowWidth == 0 || windowHeight == 0)
@@ -241,14 +271,13 @@ int main(int argc, char **argv)
       if (state.useImage)
       {
         glDisable(GL_DEPTH_TEST);
-        imageShader.use();
+        sourceShader.use();
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, image.id());
-        imageShader.setInt("uImage", 0);
-        imageShader.setFloat("uImageAspect", static_cast<float>(image.width()) / image.height());
-        // The canvas aspect only differs from the image's by cell rounding, so fill it.
-        imageShader.setFloat("uViewAspect", static_cast<float>(image.width()) / image.height());
-        imageShader.setVec3("uBackground", kBackground);
+        // Frames are layers of an array texture; stills have just one.
+        glBindTexture(GL_TEXTURE_2D_ARRAY, image.id());
+        sourceShader.setInt("uSource", 0);
+        sourceShader.setInt("uLayer", image.frameAt(state.animTime));
+        sourceShader.setVec3("uBackground", kBackground);
         glBindVertexArray(emptyVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
       }
@@ -380,6 +409,24 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
     state->useImage = !state->useImage && state->image && state->image->valid();
     updateTitle(window, *state);
   }
+  else if (key == GLFW_KEY_SPACE)
+  {
+    state->playing = !state->playing;
+    updateTitle(window, *state);
+  }
+  else if (key == GLFW_KEY_COMMA || key == GLFW_KEY_PERIOD)
+  {
+    // Stepping pauses, so the frame stays put.
+    if (state->useImage && state->image->animated())
+    {
+      int count = state->image->frameCount();
+      int frame = state->image->frameAt(state->animTime);
+      frame = (frame + (key == GLFW_KEY_PERIOD ? 1 : count - 1)) % count;
+      state->animTime = state->image->frameStart(frame);
+      state->playing = false;
+      updateTitle(window, *state);
+    }
+  }
   else if (key == GLFW_KEY_E)
   {
     state->exportRequested = true;
@@ -412,6 +459,8 @@ void drop_callback(GLFWwindow *window, int count, const char **paths)
     {
       *state->image = std::move(loaded);
       state->useImage = true;
+      state->animTime = 0.0;
+      state->playing = true;
       updateTitle(window, *state);
       return;
     }
