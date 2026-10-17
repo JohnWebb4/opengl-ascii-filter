@@ -8,6 +8,9 @@
 class Texture
 {
 public:
+  // Empty texture; valid() is false.
+  Texture() = default;
+
   // On failure the error is logged and valid() returns false.
   explicit Texture(const std::string &path);
   ~Texture();
