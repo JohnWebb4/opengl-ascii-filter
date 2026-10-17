@@ -11,6 +11,7 @@ add_executable(opengl_ascii
   src/shader.cpp
   src/mesh.cpp
   src/framebuffer.cpp
+  src/glyph_atlas.cpp
 )
 
 # GLAD

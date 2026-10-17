@@ -5,17 +5,28 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "framebuffer.h"
+#include "glyph_atlas.h"
 #include "mesh.h"
 #include "shader.h"
 
 // Character cell footprint in window pixels.
-static const glm::ivec2 kCellSize(8, 16);
+static const glm::ivec2 kCellSize(GlyphAtlas::kGlyphWidth, GlyphAtlas::kGlyphHeight);
+
+// The orange test sphere tops out well below full luminance.
+static const float kLumaGain = 1.6f;
+
+enum class View
+{
+  Ascii,
+  Mosaic,
+  Scene,
+};
 
 struct AppState
 {
   Framebuffer *scene = nullptr;
   Framebuffer *cells = nullptr;
-  bool showCells = true;
+  View view = View::Ascii;
 };
 
 static glm::ivec2 gridSize(int width, int height)
@@ -69,8 +80,10 @@ int main(void)
 
     Shader sceneShader("scene.vert", "scene.frag");
     Shader cellShader("fullscreen.vert", "cells.frag");
+    Shader glyphShader("fullscreen.vert", "glyph.frag");
     Shader mosaicShader("fullscreen.vert", "mosaic.frag");
     Shader blitShader("fullscreen.vert", "blit.frag");
+    GlyphAtlas atlas;
     Mesh sphere = Mesh::sphere(32, 64);
 
     // Core profile requires a bound VAO even for vertex-less draws.
@@ -116,7 +129,20 @@ int main(void)
       glViewport(0, 0, sceneFbo.width(), sceneFbo.height());
       glClear(GL_COLOR_BUFFER_BIT);
 
-      if (state.showCells)
+      if (state.view == View::Ascii)
+      {
+        glyphShader.use();
+        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
+        glyphShader.setInt("uCells", 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, atlas.texture());
+        glActiveTexture(GL_TEXTURE0);
+        glyphShader.setInt("uAtlas", 1);
+        glyphShader.setIVec2("uCellSize", kCellSize);
+        glyphShader.setInt("uGlyphCount", atlas.glyphCount());
+        glyphShader.setFloat("uGain", kLumaGain);
+      }
+      else if (state.view == View::Mosaic)
       {
         mosaicShader.use();
         glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
@@ -169,6 +195,6 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   else if (key == GLFW_KEY_M)
   {
     auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
-    state->showCells = !state->showCells;
+    state->view = static_cast<View>((static_cast<int>(state->view) + 1) % 3);
   }
 }
