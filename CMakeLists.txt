@@ -8,6 +8,7 @@ add_subdirectory(external/glfw)
 
 add_executable(opengl_ascii
   src/main.cpp
+  src/ascii_filter.cpp
   src/shader.cpp
   src/mesh.cpp
   src/framebuffer.cpp

@@ -9,99 +9,28 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "ascii_filter.h"
 #include "framebuffer.h"
 #include "gif_export.h"
-#include "glyph_atlas.h"
-#include "levels.h"
 #include "mesh.h"
 #include "png_export.h"
 #include "shader.h"
 #include "texture.h"
 
-// Character cell footprint in canvas pixels.
-static const glm::ivec2 kCellSize(GlyphAtlas::kGlyphWidth, GlyphAtlas::kGlyphHeight);
-
 // Clear color of the scene target, also the bars around the canvas in the window.
 static const glm::vec3 kBackground(0.05f, 0.05f, 0.08f);
-
-// The orange test sphere tops out well below full luminance.
-static const float kDefaultGain = 1.6f;
-
-enum class View
-{
-  Ascii,
-  Mosaic,
-  Scene,
-};
-
-// Values match the MODE_* constants in glyph.frag.
-enum class ColorMode
-{
-  Mono,
-  Ansi16,
-  Ansi256,
-  Truecolor,
-};
-
-static const char *kColorModeNames[] = {"mono", "ANSI 16", "ANSI 256", "truecolor"};
-
-static const int kDefaultColumns = 120;
-static const int kMinColumns = 20;
-static const int kMaxColumns = 400;
-
-// Chat sites shrink large uploads, which blurs the 1-2 pixel glyph strokes.
-// A 960 px wide export came out distorted while a 320 px one was fine.
-static const int kShareWidthLimit = 400;
 
 struct AppState
 {
   Texture *image = nullptr;
   bool useImage = false;
-  View view = View::Ascii;
-  ColorMode colorMode = ColorMode::Truecolor;
-  float gain = kDefaultGain;
-  float contrast = 1.0f;
-  bool autoLevels = false;
+  Filter *filter = nullptr;
   bool exportRequested = false;
   bool gifExportRequested = false;
-  int columns = kDefaultColumns;
-  glm::ivec2 grid{0, 0};  // cells across and down, set each frame
-  double animTime = 0.0;  // seconds into an animated image
+  glm::ivec2 canvasSize{0, 0};  // set each frame
+  double animTime = 0.0;        // seconds into an animated image
   bool playing = true;
 };
-
-// Cells across and down for content of the given aspect ratio (width / height).
-// Rows follow from the column count and the cell shape; the grid is shrunk if
-// the canvas would exceed the largest texture the GPU supports.
-static glm::ivec2 canvasGrid(int columns, float aspect, int maxTexture)
-{
-  int cols = columns;
-  int rows = std::max(1, static_cast<int>(std::lround(cols / aspect * kCellSize.x / kCellSize.y)));
-
-  int maxRows = maxTexture / kCellSize.y;
-  if (rows > maxRows)
-  {
-    cols = std::max(1, cols * maxRows / rows);
-    rows = maxRows;
-  }
-  cols = std::min(cols, maxTexture / kCellSize.x);
-  return glm::ivec2(cols, rows);
-}
-
-static bool isWideForSharing(const glm::ivec2 &canvasSize)
-{
-  return canvasSize.x > kShareWidthLimit;
-}
-
-static void warnIfWide(const glm::ivec2 &canvasSize)
-{
-  if (isWideForSharing(canvasSize))
-  {
-    std::cout << "Warning: the export is " << canvasSize.x << " px wide. Sites that shrink uploads can blur the glyphs; "
-              << kShareWidthLimit / kCellSize.x << " columns or fewer (" << kShareWidthLimit
-              << " px) stays sharp." << std::endl;
-  }
-}
 
 static void updateTitle(GLFWwindow *window, const AppState &state)
 {
@@ -123,15 +52,8 @@ static void updateTitle(GLFWwindow *window, const AppState &state)
     }
   }
 
-  char title[320];
-  glm::ivec2 canvasSize = state.grid * kCellSize;
-  snprintf(title, sizeof(title),
-           "OpenGL ASCII Filter - %s %dx%d cells, export %dx%d px%s, %s, gain %.2f, contrast %.2f, auto-levels %s",
-           source, state.grid.x, state.grid.y, canvasSize.x, canvasSize.y,
-           isWideForSharing(canvasSize) ? " (wide)" : "",
-           kColorModeNames[static_cast<int>(state.colorMode)], state.gain, state.contrast,
-           state.autoLevels ? "on" : "off");
-  glfwSetWindowTitle(window, title);
+  std::string title = std::string("OpenGL ASCII Filter - ") + source + " " + state.filter->status();
+  glfwSetWindowTitle(window, title.c_str());
 }
 
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
@@ -168,25 +90,22 @@ int main(int argc, char **argv)
     int maxTexture;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
 
-    // All three are sized to the canvas (the character grid in pixels) at the
-    // top of every frame; the window only displays the result.
+    // Both are sized to the filter's canvas at the top of every frame; the
+    // window only displays the result.
     Framebuffer sceneFbo(1, 1);
-    Framebuffer cellFbo(1, 1, false);
     Framebuffer canvasFbo(1, 1, false);
-    // Glyph pixels should stay sharp when the canvas is scaled to the window.
+    // Filter pixels should stay sharp when the canvas is scaled to the window.
     canvasFbo.setFilter(GL_NEAREST);
 
+    AsciiFilter ascii;
+
     AppState state;
+    state.filter = &ascii;
     glfwSetWindowUserPointer(window, &state);
 
     Shader sceneShader("scene.vert", "scene.frag");
-    Shader cellShader("fullscreen.vert", "cells.frag");
-    Shader glyphShader("fullscreen.vert", "glyph.frag");
-    Shader mosaicShader("fullscreen.vert", "mosaic.frag");
     Shader imageShader("fullscreen.vert", "image.frag");
     Shader sourceShader("fullscreen.vert", "source.frag");
-    Shader blitShader("fullscreen.vert", "blit.frag");
-    GlyphAtlas atlas;
     Mesh sphere = Mesh::sphere(32, 64);
 
     // An image on the command line replaces the sphere as the scene source.
@@ -204,58 +123,11 @@ int main(int argc, char **argv)
 
     const glm::vec3 cameraPos(0.0f, 0.0f, 3.0f);
 
-    // Smoothed luminance range, so auto-levels doesn't flicker on a moving scene.
-    glm::vec2 levels(0.0f, 1.0f);
-
-    // Binds the glyph shader and its inputs; the caller issues the draw.
-    auto setupAscii = [&]()
-    {
-      glyphShader.use();
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
-      glyphShader.setInt("uCells", 0);
-      glActiveTexture(GL_TEXTURE1);
-      glBindTexture(GL_TEXTURE_2D, atlas.texture());
-      glActiveTexture(GL_TEXTURE0);
-      glyphShader.setInt("uAtlas", 1);
-      glyphShader.setIVec2("uCellSize", kCellSize);
-      glyphShader.setInt("uGlyphCount", atlas.glyphCount());
-      glyphShader.setFloat("uGain", state.gain);
-      glyphShader.setVec2("uLevels", levels);
-      glyphShader.setFloat("uContrast", state.contrast);
-      glyphShader.setInt("uColorMode", static_cast<int>(state.colorMode));
-    };
-
-    // Draws one of the views into the canvas; the caller has the VAO bound.
-    auto renderCanvas = [&](View view)
-    {
-      canvasFbo.bind();
-      glActiveTexture(GL_TEXTURE0);
-      if (view == View::Ascii)
-      {
-        setupAscii();
-      }
-      else if (view == View::Mosaic)
-      {
-        mosaicShader.use();
-        glBindTexture(GL_TEXTURE_2D, cellFbo.colorTexture());
-        mosaicShader.setInt("uCells", 0);
-        mosaicShader.setIVec2("uCellSize", kCellSize);
-      }
-      else
-      {
-        blitShader.use();
-        glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
-        blitShader.setInt("uScene", 0);
-      }
-      glDrawArrays(GL_TRIANGLES, 0, 3);
-    };
-
-    // Scene pass and cell pass for one frame: draws the sphere, or the given
-    // layer of the image, then reduces it to one texel per character cell.
+    // Source pass and the filter's own prepare pass for one frame: draws the
+    // sphere, or the given layer of the image, then lets the filter reduce it.
     auto renderFrame = [&](int layer)
     {
-      // Scene pass -> offscreen FBO
+      // Source pass -> offscreen FBO
       sceneFbo.bind();
       glEnable(GL_DEPTH_TEST);
       glClearColor(kBackground.r, kBackground.g, kBackground.b, 1.0f);
@@ -292,14 +164,7 @@ int main(int argc, char **argv)
       glDisable(GL_DEPTH_TEST);
       glBindVertexArray(emptyVao);
 
-      // Cell pass -> one texel per character cell
-      cellFbo.bind();
-      cellShader.use();
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, sceneFbo.colorTexture());
-      cellShader.setInt("uScene", 0);
-      cellShader.setIVec2("uCellSize", kCellSize);
-      glDrawArrays(GL_TRIANGLES, 0, 3);
+      state.filter->prepare(sceneFbo.colorTexture(), state.canvasSize);
     };
 
     double lastTime = glfwGetTime();
@@ -326,33 +191,23 @@ int main(int argc, char **argv)
       float contentAspect = state.useImage
                                 ? static_cast<float>(image.width()) / image.height()
                                 : static_cast<float>(windowWidth) / windowHeight;
-      glm::ivec2 grid = canvasGrid(state.columns, contentAspect, maxTexture);
-      if (grid != state.grid)
+      glm::ivec2 canvasSize = state.filter->canvasSize(contentAspect, maxTexture);
+      if (canvasSize != state.canvasSize)
       {
-        state.grid = grid;
+        state.canvasSize = canvasSize;
         updateTitle(window, state);
       }
-      glm::ivec2 canvasSize = grid * kCellSize;
       sceneFbo.resize(canvasSize.x, canvasSize.y);
-      cellFbo.resize(grid.x, grid.y);
       canvasFbo.resize(canvasSize.x, canvasSize.y);
 
       renderFrame(state.useImage ? image.frameAt(state.animTime) : 0);
 
-      // Auto-levels: ease toward the measured range, or back to full range when off
-      glm::vec2 targetLevels(0.0f, 1.0f);
-      if (state.autoLevels)
-      {
-        estimateLevels(cellFbo, targetLevels.x, targetLevels.y);
-      }
-      levels = glm::mix(levels, targetLevels, 0.15f);
-
-      // Export: always the ASCII view, at canvas size
+      // Export: the filter's export view, at canvas size
       if (state.exportRequested)
       {
         state.exportRequested = false;
-        warnIfWide(canvasSize);
-        renderCanvas(View::Ascii);
+        state.filter->warnExport(canvasSize);
+        state.filter->renderExport(canvasFbo, sceneFbo.colorTexture());
 
         std::string path = timestampedPngName();
         if (writePng(canvasFbo, path))
@@ -361,7 +216,7 @@ int main(int argc, char **argv)
         }
       }
 
-      renderCanvas(state.view);
+      state.filter->render(canvasFbo, sceneFbo.colorTexture());
 
       // Present pass -> window, canvas fitted with bars
       Framebuffer::unbind();
@@ -381,7 +236,7 @@ int main(int argc, char **argv)
       glfwSwapBuffers(window);
 
       // GIF export: replay every frame through the whole pipeline. It re-renders
-      // the scene and cell targets, so it runs after this frame is on screen.
+      // the scene and filter targets, so it runs after this frame is on screen.
       if (state.gifExportRequested)
       {
         state.gifExportRequested = false;
@@ -391,7 +246,7 @@ int main(int argc, char **argv)
         }
         else
         {
-          warnIfWide(canvasSize);
+          state.filter->warnExport(canvasSize);
           std::string path = timestampedGifName();
           GifExporter gif(path, canvasSize.x, canvasSize.y);
           if (!gif.ok())
@@ -400,21 +255,13 @@ int main(int argc, char **argv)
           }
           else
           {
-            const glm::vec2 savedLevels = levels;
+            state.filter->beginExport();
             const int count = image.frameCount();
             bool failed = false;
             for (int frame = 0; frame < count && !failed; ++frame)
             {
               renderFrame(frame);
-
-              // Levels are measured per frame here, without the on-screen easing.
-              levels = glm::vec2(0.0f, 1.0f);
-              if (state.autoLevels)
-              {
-                estimateLevels(cellFbo, levels.x, levels.y);
-              }
-
-              renderCanvas(View::Ascii);
+              state.filter->renderExport(canvasFbo, sceneFbo.colorTexture());
               // Viewers ignore delays under 2 hundredths of a second.
               int delay = std::max(2, static_cast<int>(std::lround(image.frameDuration(frame) * 100.0)));
               failed = !gif.addFrame(canvasFbo, delay);
@@ -422,7 +269,7 @@ int main(int argc, char **argv)
               std::cout << "\rExporting GIF: frame " << frame + 1 << "/" << count << std::flush;
             }
             gif.finish();
-            levels = savedLevels;
+            state.filter->endExport();
 
             std::cout << (failed ? "\nExport failed: " : "\nExported ") << path << " (" << canvasSize.x << "x"
                       << canvasSize.y << ", " << count << " frames)" << std::endl;
@@ -449,82 +296,55 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
 
   auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window));
 
-  // Gain and contrast adjust on key repeat too, so holding the key sweeps them.
-  if (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN)
+  if (action == GLFW_PRESS)
   {
-    float delta = key == GLFW_KEY_UP ? 0.05f : -0.05f;
-    state->gain = glm::clamp(state->gain + delta, 0.1f, 5.0f);
-    updateTitle(window, *state);
-    return;
-  }
-  if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_LEFT)
-  {
-    float delta = key == GLFW_KEY_RIGHT ? 0.05f : -0.05f;
-    state->contrast = glm::clamp(state->contrast + delta, 0.2f, 4.0f);
-    updateTitle(window, *state);
-    return;
-  }
-
-  if (key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET)
-  {
-    int delta = key == GLFW_KEY_RIGHT_BRACKET ? 10 : -10;
-    state->columns = glm::clamp(state->columns + delta, kMinColumns, kMaxColumns);
-    return;
-  }
-
-  if (action != GLFW_PRESS)
-  {
-    return;
-  }
-
-  if (key == GLFW_KEY_ESCAPE)
-  {
-    glfwSetWindowShouldClose(window, true);
-  }
-  else if (key == GLFW_KEY_M)
-  {
-    state->view = static_cast<View>((static_cast<int>(state->view) + 1) % 3);
-  }
-  else if (key == GLFW_KEY_S)
-  {
-    // Only switch to the image when one has been loaded.
-    state->useImage = !state->useImage && state->image && state->image->valid();
-    updateTitle(window, *state);
-  }
-  else if (key == GLFW_KEY_SPACE)
-  {
-    state->playing = !state->playing;
-    updateTitle(window, *state);
-  }
-  else if (key == GLFW_KEY_COMMA || key == GLFW_KEY_PERIOD)
-  {
-    // Stepping pauses, so the frame stays put.
-    if (state->useImage && state->image->animated())
+    if (key == GLFW_KEY_ESCAPE)
     {
-      int count = state->image->frameCount();
-      int frame = state->image->frameAt(state->animTime);
-      frame = (frame + (key == GLFW_KEY_PERIOD ? 1 : count - 1)) % count;
-      state->animTime = state->image->frameStart(frame);
-      state->playing = false;
+      glfwSetWindowShouldClose(window, true);
+      return;
+    }
+    else if (key == GLFW_KEY_S)
+    {
+      // Only switch to the image when one has been loaded.
+      state->useImage = !state->useImage && state->image && state->image->valid();
       updateTitle(window, *state);
+      return;
+    }
+    else if (key == GLFW_KEY_SPACE)
+    {
+      state->playing = !state->playing;
+      updateTitle(window, *state);
+      return;
+    }
+    else if (key == GLFW_KEY_COMMA || key == GLFW_KEY_PERIOD)
+    {
+      // Stepping pauses, so the frame stays put.
+      if (state->useImage && state->image->animated())
+      {
+        int count = state->image->frameCount();
+        int frame = state->image->frameAt(state->animTime);
+        frame = (frame + (key == GLFW_KEY_PERIOD ? 1 : count - 1)) % count;
+        state->animTime = state->image->frameStart(frame);
+        state->playing = false;
+        updateTitle(window, *state);
+      }
+      return;
+    }
+    else if (key == GLFW_KEY_E)
+    {
+      state->exportRequested = true;
+      return;
+    }
+    else if (key == GLFW_KEY_G)
+    {
+      state->gifExportRequested = true;
+      return;
     }
   }
-  else if (key == GLFW_KEY_E)
+
+  // Everything else belongs to the active filter.
+  if (state->filter->onKey(key, action))
   {
-    state->exportRequested = true;
-  }
-  else if (key == GLFW_KEY_G)
-  {
-    state->gifExportRequested = true;
-  }
-  else if (key == GLFW_KEY_A)
-  {
-    state->autoLevels = !state->autoLevels;
-    updateTitle(window, *state);
-  }
-  else if (key == GLFW_KEY_C)
-  {
-    state->colorMode = static_cast<ColorMode>((static_cast<int>(state->colorMode) + 1) % 4);
     updateTitle(window, *state);
   }
 }
