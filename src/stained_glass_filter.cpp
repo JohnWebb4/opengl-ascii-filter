@@ -121,6 +121,7 @@ void StainedGlassFilter::render(const Framebuffer &canvas, GLuint scene)
   shader_.setInt("uPanePass", 0);
   shader_.setInt("uGrouped", grouped_ ? 1 : 0);
   shader_.setFloat("uLead", lead_);
+  shader_.setFloat("uMerge", merge_);
   shader_.setInt("uColorMode", static_cast<int>(colorMode_));
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }

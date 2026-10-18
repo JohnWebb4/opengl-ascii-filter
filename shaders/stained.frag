@@ -9,6 +9,7 @@ uniform bool uPanePass;    // draw one texel per pane (its color) instead of the
 uniform bool uGrouped;     // uLabels holds pane groups; otherwise every pane is its own
 uniform ivec2 uPaneGrid;   // panes across and down
 uniform sampler2D uLabels; // per pane: r is the group id, gba is the group's mean color
+uniform float uMerge;      // merge threshold, only used to fade out the per-pane shading
 uniform int uColorMode;    // MODE_*
 
 out vec4 FragColor;
@@ -122,10 +123,9 @@ void main()
     }
   }
 
-  // In a terminal palette a whole group is one flat color, taken from the group
-  // mean; truecolor keeps each pane's own color.
+  // A whole group is one piece of glass: every pane takes the group's mean color.
   vec3 source = glass;
-  if (uColorMode != MODE_TRUECOLOR && uGrouped)
+  if (uGrouped)
   {
     source = groupMeanOf(siteCell);
   }
@@ -141,8 +141,11 @@ void main()
   {
     glass = quantizeAnsi16(clamp(glass, 0.0, 1.0));
   }
-  glass *= 0.9 + 0.2 * hash22(siteCell + 17.0).x;
-  glass *= 1.1 - 0.35 * sqrt(best);
+  // Variation follows the group so its panes stay alike. The per-pane center
+  // highlight would show the pane seams inside a group, so it fades out as the
+  // threshold rises.
+  glass *= 0.9 + 0.2 * hash22(vec2(group, 17.0)).x;
+  glass *= mix(1.0, 1.1 - 0.35 * sqrt(best), 1.0 - smoothstep(0.0, 0.15, uMerge));
   glass += 0.10 * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
 
   FragColor = vec4(mix(clamp(glass, 0.0, 1.0), kLeadColor, lead), 1.0);
