@@ -141,12 +141,15 @@ void main()
   {
     glass = quantizeAnsi16(clamp(glass, 0.0, 1.0));
   }
-  // Variation follows the group so its panes stay alike. The per-pane center
-  // highlight would show the pane seams inside a group, so it fades out as the
-  // threshold rises.
+  // Variation follows the group so its panes stay alike. The center highlight and
+  // the edge highlight are measured per pane, so inside a group they would show
+  // the pane seams: the center highlight creases at each pane border, and the
+  // edge distance steps there because it is taken against the current pane's
+  // bisectors only. Both fade out as soon as the threshold merges anything.
+  float paneShading = 1.0 - smoothstep(0.0, 0.06, uMerge);
   glass *= 0.9 + 0.2 * hash22(vec2(group, 17.0)).x;
-  glass *= mix(1.0, 1.1 - 0.35 * sqrt(best), 1.0 - smoothstep(0.0, 0.15, uMerge));
-  glass += 0.10 * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
+  glass *= mix(1.0, 1.1 - 0.35 * sqrt(best), paneShading);
+  glass += 0.10 * paneShading * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
 
   FragColor = vec4(mix(clamp(glass, 0.0, 1.0), kLeadColor, lead), 1.0);
 }
