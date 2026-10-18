@@ -9,10 +9,16 @@
 // their mean colors stays under the threshold, so a gradient can't chain one
 // group across the whole picture. A threshold of 0 merges nothing.
 //
+// previous is the last frame's group per pane, or empty. It adds hysteresis so
+// a moving source doesn't make borders flicker: a pair that shared a group last
+// frame merges at threshold * (1 + hysteresis), and a pair that didn't merges at
+// threshold * (1 - hysteresis).
+//
 // group[i] is the index of a pane representing pane i's group; mean[i] is that
 // group's mean color.
 void mergeRegions(const std::vector<glm::vec3> &colors, int cols, int rows, float threshold,
-                  std::vector<int> &group, std::vector<glm::vec3> &mean);
+                  const std::vector<int> &previous, float hysteresis, std::vector<int> &group,
+                  std::vector<glm::vec3> &mean);
 
 // Luma-weighted RGB distance, 0 for equal colors and 1 for black against white.
 float colorDistance(const glm::vec3 &a, const glm::vec3 &b);

@@ -21,11 +21,21 @@ public:
   glm::ivec2 canvasSize(float aspect, int maxTexture) override;
   void prepare(GLuint scene, const glm::ivec2 &canvasSize) override;
   void render(const Framebuffer &canvas, GLuint scene) override;
+  void beginExport() override;
+  void endExport() override;
   bool onKey(int key, int action) override;
   std::string status() const override;
 
 private:
   void setCommonUniforms(GLuint scene) const;
+
+  // Values match the MODE_* constants in stained.frag.
+  enum class ColorMode
+  {
+    Truecolor,
+    Ansi256,
+    Ansi16,
+  };
 
   Shader shader_;
   Framebuffer paneFbo_;  // one texel per pane: its color
@@ -34,10 +44,13 @@ private:
   bool grouped_ = false;
   std::vector<glm::vec3> paneColors_;
   std::vector<int> group_;
+  std::vector<int> previousGroup_;  // last frame's groups, for hysteresis
+  float previousMerge_ = 0.0f;
   std::vector<glm::vec3> groupMean_;
   std::vector<float> labels_;
   int panesAcross_;
   float lead_;
   float merge_ = 0.0f;
+  ColorMode colorMode_ = ColorMode::Truecolor;
   glm::ivec2 size_{0, 0};  // set by canvasSize()
 };

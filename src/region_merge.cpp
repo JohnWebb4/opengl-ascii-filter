@@ -44,7 +44,8 @@ struct Groups
 }  // namespace
 
 void mergeRegions(const std::vector<glm::vec3> &colors, int cols, int rows, float threshold,
-                  std::vector<int> &group, std::vector<glm::vec3> &mean)
+                  const std::vector<int> &previous, float hysteresis, std::vector<int> &group,
+                  std::vector<glm::vec3> &mean)
 {
   const int total = cols * rows;
   Groups groups(colors);
@@ -76,7 +77,12 @@ void mergeRegions(const std::vector<glm::vec3> &colors, int cols, int rows, floa
     {
       const int ra = groups.find(edge.a);
       const int rb = groups.find(edge.b);
-      if (ra != rb && colorDistance(groups.meanOf(ra), groups.meanOf(rb)) < threshold)
+      float limit = threshold;
+      if (!previous.empty())
+      {
+        limit *= previous[edge.a] == previous[edge.b] ? 1.0f + hysteresis : 1.0f - hysteresis;
+      }
+      if (ra != rb && colorDistance(groups.meanOf(ra), groups.meanOf(rb)) < limit)
       {
         groups.parent[rb] = ra;
         groups.sum[ra] += groups.sum[rb];

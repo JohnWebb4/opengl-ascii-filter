@@ -18,6 +18,11 @@ static const int kMaxPanes = 160;
 static const float kDefaultLead = 0.05f;
 static const float kMaxMerge = 0.6f;
 
+// How far a pair's merge threshold moves in favor of last frame's grouping.
+static const float kHysteresis = 0.25f;
+
+static const char *kColorModeNames[] = {"truecolor", "ANSI 256", "ANSI 16"};
+
 StainedGlassFilter::StainedGlassFilter()
     : shader_("fullscreen.vert", "stained.frag"),
       paneFbo_(1, 1, false),
@@ -87,7 +92,15 @@ void StainedGlassFilter::prepare(GLuint scene, const glm::ivec2 &canvasSize)
   {
     paneColors_[i] = glm::vec3(pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2]) / 255.0f;
   }
-  mergeRegions(paneColors_, paneGrid_.x, paneGrid_.y, merge_, group_, groupMean_);
+
+  // Hysteresis needs last frame's groups on the same grid and threshold.
+  if (previousGroup_.size() != count || previousMerge_ != merge_)
+  {
+    previousGroup_.clear();
+  }
+  mergeRegions(paneColors_, paneGrid_.x, paneGrid_.y, merge_, previousGroup_, kHysteresis, group_, groupMean_);
+  previousGroup_ = group_;
+  previousMerge_ = merge_;
 
   labels_.resize(count * 4);
   for (size_t i = 0; i < count; ++i)
@@ -108,7 +121,19 @@ void StainedGlassFilter::render(const Framebuffer &canvas, GLuint scene)
   shader_.setInt("uPanePass", 0);
   shader_.setInt("uGrouped", grouped_ ? 1 : 0);
   shader_.setFloat("uLead", lead_);
+  shader_.setInt("uColorMode", static_cast<int>(colorMode_));
   glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+void StainedGlassFilter::beginExport()
+{
+  // Start the export from a clean grouping; the frames then carry over from each other.
+  previousGroup_.clear();
+}
+
+void StainedGlassFilter::endExport()
+{
+  previousGroup_.clear();
 }
 
 bool StainedGlassFilter::onKey(int key, int action)
@@ -132,13 +157,18 @@ bool StainedGlassFilter::onKey(int key, int action)
     merge_ = glm::clamp(merge_ + delta, 0.0f, kMaxMerge);
     return true;
   }
+  if (key == GLFW_KEY_C && action == GLFW_PRESS)
+  {
+    colorMode_ = static_cast<ColorMode>((static_cast<int>(colorMode_) + 1) % 3);
+    return true;
+  }
   return false;
 }
 
 std::string StainedGlassFilter::status() const
 {
-  char text[160];
-  snprintf(text, sizeof(text), "%d panes across, lead %.3f, merge %.2f, export %dx%d px", panesAcross_, lead_,
-           merge_, size_.x, size_.y);
+  char text[192];
+  snprintf(text, sizeof(text), "%d panes across, lead %.3f, merge %.2f, %s, export %dx%d px", panesAcross_, lead_,
+           merge_, kColorModeNames[static_cast<int>(colorMode_)], size_.x, size_.y);
   return text;
 }

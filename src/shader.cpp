@@ -13,8 +13,24 @@ static std::string readFile(const std::string &name)
     std::cout << "Failed to open shader: " << name << std::endl;
     return "";
   }
+
+  // GLSL has no include of its own, so a line of the form #include "file" is
+  // replaced by that file's text.
+  const std::string directive = "#include \"";
   std::stringstream ss;
-  ss << file.rdbuf();
+  std::string line;
+  while (std::getline(file, line))
+  {
+    size_t end = line.find('"', directive.size());
+    if (line.compare(0, directive.size(), directive) == 0 && end != std::string::npos)
+    {
+      ss << readFile(line.substr(directive.size(), end - directive.size())) << "\n";
+    }
+    else
+    {
+      ss << line << "\n";
+    }
+  }
   return ss.str();
 }
 

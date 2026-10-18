@@ -52,7 +52,7 @@ You can also drag and drop an image or GIF onto the window at any time. Press `S
 | `E` | Export the current ASCII view as a PNG |
 | `G` | Export the whole animated GIF as an ASCII GIF |
 
-The keys from `M` to `]` / `[` belong to the ASCII filter. In the stained glass filter, `]` / `[` add or remove 4 panes across (8 to 160), `Up` / `Down` thicken or thin the lead lines, and `Right` / `Left` raise or lower the merge threshold (0 to 0.6): neighboring panes of similar color are grouped into one piece of glass, and the lead outlines each group. The threshold is how far apart the groups' average colors may be, and 0 turns grouping off. Its canvas is fixed at 1024 px on the long side.
+The keys from `M` to `]` / `[` belong to the ASCII filter. In the stained glass filter, `]` / `[` add or remove 4 panes across (8 to 160), `Up` / `Down` thicken or thin the lead lines, and `Right` / `Left` raise or lower the merge threshold (0 to 0.6): neighboring panes of similar color are grouped into one piece of glass, and the lead outlines each group. The threshold is how far apart the groups' average colors may be, and 0 turns grouping off. `C` cycles truecolor, ANSI 256 and ANSI 16: in the ANSI modes each group is one flat palette color, taken from the group's average. Its canvas is fixed at 1024 px on the long side.
 
 The window title shows the source, the grid size in cells, the export size in pixels, the color mode, gain, contrast, and whether auto-levels is on.
 

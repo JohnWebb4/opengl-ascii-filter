@@ -8,9 +8,16 @@ uniform float uLead;       // half-width of the lead lines, in panes
 uniform bool uPanePass;    // draw one texel per pane (its color) instead of the glass
 uniform bool uGrouped;     // uLabels holds pane groups; otherwise every pane is its own
 uniform ivec2 uPaneGrid;   // panes across and down
-uniform sampler2D uLabels; // per pane: r is the group id
+uniform sampler2D uLabels; // per pane: r is the group id, gba is the group's mean color
+uniform int uColorMode;    // MODE_*
 
 out vec4 FragColor;
+
+const int MODE_TRUECOLOR = 0;
+const int MODE_ANSI256 = 1;
+// Anything else is ANSI 16.
+
+#include "palette.glsl"
 
 const vec3 kLeadColor = vec3(0.03, 0.03, 0.04);
 
@@ -50,6 +57,13 @@ float groupOf(vec2 cell)
 {
   ivec2 c = clamp(ivec2(cell), ivec2(0), uPaneGrid - 1);
   return uGrouped ? texelFetch(uLabels, c, 0).r : float(c.y * uPaneGrid.x + c.x);
+}
+
+// Mean color of the group the pane in the given grid cell belongs to.
+vec3 groupMeanOf(vec2 cell)
+{
+  ivec2 c = clamp(ivec2(cell), ivec2(0), uPaneGrid - 1);
+  return texelFetch(uLabels, c, 0).gba;
 }
 
 void main()
@@ -108,9 +122,25 @@ void main()
     }
   }
 
+  // In a terminal palette a whole group is one flat color, taken from the group
+  // mean; truecolor keeps each pane's own color.
+  vec3 source = glass;
+  if (uColorMode != MODE_TRUECOLOR && uGrouped)
+  {
+    source = groupMeanOf(siteCell);
+  }
+
   // Richer color, a little brightness variation per pane, brighter toward the center.
-  float luma = dot(glass, vec3(0.299, 0.587, 0.114));
-  glass = mix(vec3(luma), glass, 1.3);
+  float luma = dot(source, vec3(0.299, 0.587, 0.114));
+  glass = mix(vec3(luma), source, 1.3);
+  if (uColorMode == MODE_ANSI256)
+  {
+    glass = quantizeAnsi256(clamp(glass, 0.0, 1.0));
+  }
+  else if (uColorMode != MODE_TRUECOLOR)
+  {
+    glass = quantizeAnsi16(clamp(glass, 0.0, 1.0));
+  }
   glass *= 0.9 + 0.2 * hash22(siteCell + 17.0).x;
   glass *= 1.1 - 0.35 * sqrt(best);
   glass += 0.10 * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
