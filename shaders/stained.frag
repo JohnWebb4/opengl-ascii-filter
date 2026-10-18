@@ -5,7 +5,10 @@ uniform sampler2D uScene;
 uniform vec2 uCanvasSize;  // canvas pixels
 uniform float uCellPx;     // average pane size in canvas pixels
 uniform float uLead;       // half-width of the lead lines, in panes
-uniform float uMerge;      // panes closer than this in color lose the lead between them; 0 is off
+uniform bool uPanePass;    // draw one texel per pane (its color) instead of the glass
+uniform bool uGrouped;     // uLabels holds pane groups; otherwise every pane is its own
+uniform ivec2 uPaneGrid;   // panes across and down
+uniform sampler2D uLabels; // per pane: r is the group id
 
 out vec4 FragColor;
 
@@ -41,15 +44,22 @@ vec3 paneColor(vec2 site)
   return c / 5.0;
 }
 
-// Luma-weighted RGB distance, 0 for equal colors and 1 for black against white.
-float colorDistance(vec3 a, vec3 b)
+// Group the pane in the given grid cell belongs to. Cells outside the canvas
+// take their nearest edge pane's group, so no lead is drawn along the canvas edge.
+float groupOf(vec2 cell)
 {
-  vec3 d = a - b;
-  return sqrt(dot(d * d, vec3(0.299, 0.587, 0.114)));
+  ivec2 c = clamp(ivec2(cell), ivec2(0), uPaneGrid - 1);
+  return uGrouped ? texelFetch(uLabels, c, 0).r : float(c.y * uPaneGrid.x + c.x);
 }
 
 void main()
 {
+  if (uPanePass)
+  {
+    FragColor = vec4(paneColor(siteOf(floor(gl_FragCoord.xy))), 1.0);
+    return;
+  }
+
   // Work in pane units: one grid cell is one unit.
   vec2 p = vUV * uCanvasSize / uCellPx;
   vec2 base = floor(p);
@@ -75,28 +85,25 @@ void main()
   }
 
   vec3 glass = paneColor(site);
+  float group = groupOf(siteCell);
   float aa = 1.0 / uCellPx;  // one canvas pixel
 
-  // Each border is the perpendicular bisector to a neighbor. Where the neighbor
-  // is close in color the lead there is dropped, so similar panes read as one.
+  // Each border is the perpendicular bisector to a neighbor. Only borders between
+  // different groups get lead, so it outlines each group of panes.
   float edge = 1e9;  // nearest border that keeps its lead, for the highlight
   float lead = 0.0;
   for (int j = -2; j <= 2; ++j)
   {
     for (int i = -2; i <= 2; ++i)
     {
-      vec2 s = siteOf(base + vec2(i, j));
+      vec2 cell = base + vec2(i, j);
+      vec2 s = siteOf(cell);
       if (s != site)
       {
         float d = dot(0.5 * (site + s) - p, normalize(s - site));
-        float merged = 0.0;
-        // Only borders near enough to show lead or highlight need the neighbor's color.
-        if (uMerge > 0.0 && d < 0.3)
-        {
-          merged = 1.0 - smoothstep(0.6 * uMerge, uMerge, colorDistance(glass, paneColor(s)));
-        }
-        edge = min(edge, d + merged * 10.0);
-        lead = max(lead, (1.0 - merged) * (1.0 - smoothstep(uLead - aa, uLead + aa, d)));
+        float other = groupOf(cell) != group ? 1.0 : 0.0;
+        edge = min(edge, d + (1.0 - other) * 10.0);
+        lead = max(lead, other * (1.0 - smoothstep(uLead - aa, uLead + aa, d)));
       }
     }
   }

@@ -10,6 +10,7 @@ add_executable(opengl_ascii
   src/main.cpp
   src/ascii_filter.cpp
   src/shader.cpp
+  src/region_merge.cpp
   src/stained_glass_filter.cpp
   src/mesh.cpp
   src/framebuffer.cpp
