@@ -51,6 +51,7 @@ private:
   int panesAcross_;
   float lead_;
   float merge_ = 0.0f;
+  float smooth_;
   ColorMode colorMode_ = ColorMode::Truecolor;
   glm::ivec2 size_{0, 0};  // set by canvasSize()
 };

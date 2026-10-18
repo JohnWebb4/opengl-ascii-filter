@@ -18,6 +18,11 @@ static const int kMaxPanes = 160;
 static const float kDefaultLead = 0.05f;
 static const float kMaxMerge = 0.6f;
 
+// Gaussian radius, in panes, for rounding off the borders between groups. Past
+// about 0.8 the 5x5 neighborhood the shader searches starts to cut it off.
+static const float kDefaultSmooth = 0.4f;
+static const float kMaxSmooth = 0.8f;
+
 // How far a pair's merge threshold moves in favor of last frame's grouping.
 static const float kHysteresis = 0.25f;
 
@@ -27,7 +32,8 @@ StainedGlassFilter::StainedGlassFilter()
     : shader_("fullscreen.vert", "stained.frag"),
       paneFbo_(1, 1, false),
       panesAcross_(kDefaultPanes),
-      lead_(kDefaultLead)
+      lead_(kDefaultLead),
+      smooth_(kDefaultSmooth)
 {
   glGenTextures(1, &labelTexture_);
   glBindTexture(GL_TEXTURE_2D, labelTexture_);
@@ -122,6 +128,7 @@ void StainedGlassFilter::render(const Framebuffer &canvas, GLuint scene)
   shader_.setInt("uGrouped", grouped_ ? 1 : 0);
   shader_.setFloat("uLead", lead_);
   shader_.setFloat("uMerge", merge_);
+  shader_.setFloat("uSmooth", smooth_);
   shader_.setInt("uColorMode", static_cast<int>(colorMode_));
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
@@ -158,6 +165,12 @@ bool StainedGlassFilter::onKey(int key, int action)
     merge_ = glm::clamp(merge_ + delta, 0.0f, kMaxMerge);
     return true;
   }
+  if (key == GLFW_KEY_MINUS || key == GLFW_KEY_EQUAL)
+  {
+    float delta = key == GLFW_KEY_EQUAL ? 0.05f : -0.05f;
+    smooth_ = glm::clamp(smooth_ + delta, 0.0f, kMaxSmooth);
+    return true;
+  }
   if (key == GLFW_KEY_C && action == GLFW_PRESS)
   {
     colorMode_ = static_cast<ColorMode>((static_cast<int>(colorMode_) + 1) % 3);
@@ -168,8 +181,8 @@ bool StainedGlassFilter::onKey(int key, int action)
 
 std::string StainedGlassFilter::status() const
 {
-  char text[192];
-  snprintf(text, sizeof(text), "%d panes across, lead %.3f, merge %.2f, %s, export %dx%d px", panesAcross_, lead_,
-           merge_, kColorModeNames[static_cast<int>(colorMode_)], size_.x, size_.y);
+  char text[224];
+  snprintf(text, sizeof(text), "%d panes across, lead %.3f, merge %.2f, smooth %.2f, %s, export %dx%d px",
+           panesAcross_, lead_, merge_, smooth_, kColorModeNames[static_cast<int>(colorMode_)], size_.x, size_.y);
   return text;
 }

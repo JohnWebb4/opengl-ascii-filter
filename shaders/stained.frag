@@ -9,6 +9,7 @@ uniform bool uPanePass;    // draw one texel per pane (its color) instead of the
 uniform bool uGrouped;     // uLabels holds pane groups; otherwise every pane is its own
 uniform ivec2 uPaneGrid;   // panes across and down
 uniform sampler2D uLabels; // per pane: r is the group id, gba is the group's mean color
+uniform float uSmooth;     // gaussian radius for smoothing group borders, in panes; 0 is off
 uniform float uMerge;      // merge threshold, only used to fade out the per-pane shading
 uniform int uColorMode;    // MODE_*
 
@@ -99,37 +100,108 @@ void main()
     }
   }
 
-  vec3 glass = paneColor(site);
-  float group = groupOf(siteCell);
   float aa = 1.0 / uCellPx;  // one canvas pixel
-
-  // Each border is the perpendicular bisector to a neighbor. Only borders between
-  // different groups get lead, so it outlines each group of panes.
-  float edge = 1e9;  // nearest border that keeps its lead, for the highlight
+  float group;
+  float edge = 1e9;  // distance to the nearest group border, for the highlight
   float lead = 0.0;
-  for (int j = -2; j <= 2; ++j)
+  vec3 source;
+
+  if (uSmooth > 0.0)
   {
-    for (int i = -2; i <= 2; ++i)
+    // Smoothed groups. Every nearby site votes for its group with a gaussian
+    // weight; the pixel belongs to the group with the most weight, and the border
+    // is where the top two groups tie. That makes the border a smooth curve
+    // instead of a chain of Voronoi edges.
+    float ids[25];
+    float w[25];
+    vec2 grad[25];  // gradient of each weight with respect to p
+    float invSigma2 = 1.0 / (uSmooth * uSmooth);
+    int n = 0;
+    for (int j = -2; j <= 2; ++j)
     {
-      vec2 cell = base + vec2(i, j);
-      vec2 s = siteOf(cell);
-      if (s != site)
+      for (int i = -2; i <= 2; ++i)
       {
-        float d = dot(0.5 * (site + s) - p, normalize(s - site));
-        float other = groupOf(cell) != group ? 1.0 : 0.0;
-        edge = min(edge, d + (1.0 - other) * 10.0);
-        lead = max(lead, other * (1.0 - smoothstep(uLead - aa, uLead + aa, d)));
+        vec2 cell = base + vec2(i, j);
+        vec2 toSite = siteOf(cell) - p;
+        ids[n] = groupOf(cell);
+        w[n] = exp(-(dot(toSite, toSite) - best) * invSigma2);
+        grad[n] = w[n] * 2.0 * invSigma2 * toSite;
+        ++n;
       }
     }
-  }
 
-  // A whole group is one piece of glass: every pane takes the group's mean color.
-  vec3 source = glass;
-  if (uGrouped)
+    // Total weight of each group, keeping the top two.
+    float w1 = 0.0, w2 = 0.0;
+    vec2 g1 = vec2(0.0), g2 = vec2(0.0);
+    float id1 = -1.0;
+    for (int k = 0; k < 25; ++k)
+    {
+      float sumW = 0.0;
+      vec2 sumG = vec2(0.0);
+      for (int m = 0; m < 25; ++m)
+      {
+        if (ids[m] == ids[k])
+        {
+          sumW += w[m];
+          sumG += grad[m];
+        }
+      }
+      if (sumW > w1)
+      {
+        w2 = w1;
+        g2 = g1;
+        w1 = sumW;
+        g1 = sumG;
+        id1 = ids[k];
+      }
+      else if (ids[k] != id1 && sumW > w2)
+      {
+        w2 = sumW;
+        g2 = sumG;
+      }
+    }
+    group = id1;
+
+    // Distance to the tie, in panes: the log ratio of the two weights over its
+    // gradient, which is exact for two gaussians and a good estimate otherwise.
+    if (w2 > 0.0)
+    {
+      float ratio = log(w1 / w2);
+      float slope = length(g1 / w1 - g2 / w2);
+      edge = ratio / max(slope, 1e-4);
+    }
+    lead = 1.0 - smoothstep(uLead - aa, uLead + aa, edge);
+
+    ivec2 winner = ivec2(int(group) % uPaneGrid.x, int(group) / uPaneGrid.x);
+    source = uGrouped ? texelFetch(uLabels, winner, 0).gba : paneColor(siteOf(vec2(winner)));
+  }
+  else
   {
-    source = groupMeanOf(siteCell);
+    group = groupOf(siteCell);
+
+    // Each border is the perpendicular bisector to a neighbor. Only borders between
+    // different groups get lead, so it outlines each group of panes.
+    for (int j = -2; j <= 2; ++j)
+    {
+      for (int i = -2; i <= 2; ++i)
+      {
+        vec2 cell = base + vec2(i, j);
+        vec2 s = siteOf(cell);
+        if (s != site)
+        {
+          float d = dot(0.5 * (site + s) - p, normalize(s - site));
+          float other = groupOf(cell) != group ? 1.0 : 0.0;
+          edge = min(edge, d + (1.0 - other) * 10.0);
+          lead = max(lead, other * (1.0 - smoothstep(uLead - aa, uLead + aa, d)));
+        }
+      }
+    }
+
+    // A whole group is one piece of glass: every pane takes the group's mean color.
+    source = uGrouped ? groupMeanOf(siteCell) : paneColor(site);
   }
 
+  vec3 glass;
   // Richer color, a little brightness variation per pane, brighter toward the center.
   float luma = dot(source, vec3(0.299, 0.587, 0.114));
   glass = mix(vec3(luma), source, 1.3);
@@ -141,15 +213,18 @@ void main()
   {
     glass = quantizeAnsi16(clamp(glass, 0.0, 1.0));
   }
-  // Variation follows the group so its panes stay alike. The center highlight and
-  // the edge highlight are measured per pane, so inside a group they would show
-  // the pane seams: the center highlight creases at each pane border, and the
-  // edge distance steps there because it is taken against the current pane's
-  // bisectors only. Both fade out as soon as the threshold merges anything.
+  // Variation follows the group so its panes stay alike. The center highlight and,
+  // without smoothing, the edge highlight are measured per pane, so inside a group
+  // they would show the pane seams: the center highlight creases at each pane
+  // border, and the exact path's edge distance steps there because it is taken
+  // against the current pane's bisectors only. They fade out as soon as the
+  // threshold merges anything.
   float paneShading = 1.0 - smoothstep(0.0, 0.06, uMerge);
   glass *= 0.9 + 0.2 * hash22(vec2(group, 17.0)).x;
   glass *= mix(1.0, 1.1 - 0.35 * sqrt(best), paneShading);
-  glass += 0.10 * paneShading * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
+  // Smoothed borders have no pane seams, so their edge highlight stays.
+  float bevelShading = uSmooth > 0.0 ? 1.0 : paneShading;
+  glass += 0.10 * bevelShading * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
 
   FragColor = vec4(mix(clamp(glass, 0.0, 1.0), kLeadColor, lead), 1.0);
 }
