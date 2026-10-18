@@ -22,5 +22,6 @@ private:
   Shader shader_;
   int panesAcross_;
   float lead_;
+  float merge_ = 0.0f;
   glm::ivec2 size_{0, 0};  // set by canvasSize()
 };

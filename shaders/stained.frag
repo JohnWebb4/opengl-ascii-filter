@@ -5,6 +5,7 @@ uniform sampler2D uScene;
 uniform vec2 uCanvasSize;  // canvas pixels
 uniform float uCellPx;     // average pane size in canvas pixels
 uniform float uLead;       // half-width of the lead lines, in panes
+uniform float uMerge;      // panes closer than this in color lose the lead between them; 0 is off
 
 out vec4 FragColor;
 
@@ -27,6 +28,24 @@ vec3 sceneAt(vec2 panePos)
 {
   vec2 uv = clamp(panePos * uCellPx / uCanvasSize, 0.0, 1.0);
   return texture(uScene, uv).rgb;
+}
+
+// One piece of glass takes the mean of a few samples around its site.
+vec3 paneColor(vec2 site)
+{
+  vec3 c = sceneAt(site);
+  c += sceneAt(site + vec2(0.25, 0.0));
+  c += sceneAt(site - vec2(0.25, 0.0));
+  c += sceneAt(site + vec2(0.0, 0.25));
+  c += sceneAt(site - vec2(0.0, 0.25));
+  return c / 5.0;
+}
+
+// Luma-weighted RGB distance, 0 for equal colors and 1 for black against white.
+float colorDistance(vec3 a, vec3 b)
+{
+  vec3 d = a - b;
+  return sqrt(dot(d * d, vec3(0.299, 0.587, 0.114)));
 }
 
 void main()
@@ -55,8 +74,13 @@ void main()
     }
   }
 
-  // Distance to the nearest pane border: the perpendicular bisector to each neighbor.
-  float edge = 1e9;
+  vec3 glass = paneColor(site);
+  float aa = 1.0 / uCellPx;  // one canvas pixel
+
+  // Each border is the perpendicular bisector to a neighbor. Where the neighbor
+  // is close in color the lead there is dropped, so similar panes read as one.
+  float edge = 1e9;  // nearest border that keeps its lead, for the highlight
+  float lead = 0.0;
   for (int j = -2; j <= 2; ++j)
   {
     for (int i = -2; i <= 2; ++i)
@@ -64,18 +88,18 @@ void main()
       vec2 s = siteOf(base + vec2(i, j));
       if (s != site)
       {
-        edge = min(edge, dot(0.5 * (site + s) - p, normalize(s - site)));
+        float d = dot(0.5 * (site + s) - p, normalize(s - site));
+        float merged = 0.0;
+        // Only borders near enough to show lead or highlight need the neighbor's color.
+        if (uMerge > 0.0 && d < 0.3)
+        {
+          merged = 1.0 - smoothstep(0.6 * uMerge, uMerge, colorDistance(glass, paneColor(s)));
+        }
+        edge = min(edge, d + merged * 10.0);
+        lead = max(lead, (1.0 - merged) * (1.0 - smoothstep(uLead - aa, uLead + aa, d)));
       }
     }
   }
-
-  // One piece of glass takes the mean of a few samples around its site.
-  vec3 glass = sceneAt(site);
-  glass += sceneAt(site + vec2(0.25, 0.0));
-  glass += sceneAt(site - vec2(0.25, 0.0));
-  glass += sceneAt(site + vec2(0.0, 0.25));
-  glass += sceneAt(site - vec2(0.0, 0.25));
-  glass /= 5.0;
 
   // Richer color, a little brightness variation per pane, brighter toward the center.
   float luma = dot(glass, vec3(0.299, 0.587, 0.114));
@@ -84,7 +108,5 @@ void main()
   glass *= 1.1 - 0.35 * sqrt(best);
   glass += 0.10 * (1.0 - smoothstep(0.0, 0.3, edge)) * glass;
 
-  float aa = 1.0 / uCellPx;  // one canvas pixel
-  float lead = 1.0 - smoothstep(uLead - aa, uLead + aa, edge);
   FragColor = vec4(mix(clamp(glass, 0.0, 1.0), kLeadColor, lead), 1.0);
 }

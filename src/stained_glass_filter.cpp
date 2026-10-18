@@ -13,6 +13,7 @@ static const int kMinPanes = 8;
 static const int kMaxPanes = 160;
 
 static const float kDefaultLead = 0.05f;
+static const float kMaxMerge = 0.6f;
 
 StainedGlassFilter::StainedGlassFilter()
     : shader_("fullscreen.vert", "stained.frag"), panesAcross_(kDefaultPanes), lead_(kDefaultLead)
@@ -41,12 +42,13 @@ void StainedGlassFilter::render(const Framebuffer &canvas, GLuint scene)
   shader_.setVec2("uCanvasSize", glm::vec2(size_));
   shader_.setFloat("uCellPx", static_cast<float>(size_.x) / panesAcross_);
   shader_.setFloat("uLead", lead_);
+  shader_.setFloat("uMerge", merge_);
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
 bool StainedGlassFilter::onKey(int key, int action)
 {
-  // Both adjust on key repeat too, so holding the key sweeps them.
+  // All adjust on key repeat too, so holding the key sweeps them.
   if (key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET)
   {
     int delta = key == GLFW_KEY_RIGHT_BRACKET ? 4 : -4;
@@ -59,13 +61,19 @@ bool StainedGlassFilter::onKey(int key, int action)
     lead_ = glm::clamp(lead_ + delta, 0.0f, 0.2f);
     return true;
   }
+  if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_LEFT)
+  {
+    float delta = key == GLFW_KEY_RIGHT ? 0.02f : -0.02f;
+    merge_ = glm::clamp(merge_ + delta, 0.0f, kMaxMerge);
+    return true;
+  }
   return false;
 }
 
 std::string StainedGlassFilter::status() const
 {
-  char text[128];
-  snprintf(text, sizeof(text), "%d panes across, lead %.3f, export %dx%d px", panesAcross_, lead_, size_.x,
-           size_.y);
+  char text[160];
+  snprintf(text, sizeof(text), "%d panes across, lead %.3f, merge %.2f, export %dx%d px", panesAcross_, lead_,
+           merge_, size_.x, size_.y);
   return text;
 }
