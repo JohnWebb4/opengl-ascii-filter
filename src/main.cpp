@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <vector>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -15,6 +16,7 @@
 #include "mesh.h"
 #include "png_export.h"
 #include "shader.h"
+#include "stained_glass_filter.h"
 #include "texture.h"
 
 // Clear color of the scene target, also the bars around the canvas in the window.
@@ -24,7 +26,9 @@ struct AppState
 {
   Texture *image = nullptr;
   bool useImage = false;
-  Filter *filter = nullptr;
+  std::vector<Filter *> filters;
+  size_t activeFilter = 0;
+  Filter *filter() const { return filters[activeFilter]; }
   bool exportRequested = false;
   bool gifExportRequested = false;
   glm::ivec2 canvasSize{0, 0};  // set each frame
@@ -52,7 +56,8 @@ static void updateTitle(GLFWwindow *window, const AppState &state)
     }
   }
 
-  std::string title = std::string("OpenGL ASCII Filter - ") + source + " " + state.filter->status();
+  std::string title = std::string("OpenGL Filter - ") + state.filter()->name() + " - " + source + " " +
+                      state.filter()->status();
   glfwSetWindowTitle(window, title.c_str());
 }
 
@@ -66,7 +71,7 @@ int main(int argc, char **argv)
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  GLFWwindow *window = glfwCreateWindow(1280, 720, "OpenGL ASCII Filter", NULL, NULL);
+  GLFWwindow *window = glfwCreateWindow(1280, 720, "OpenGL Filter", NULL, NULL);
   if (window == NULL)
   {
     std::cout << "Failed to create GLFW window" << std::endl;
@@ -98,9 +103,10 @@ int main(int argc, char **argv)
     canvasFbo.setFilter(GL_NEAREST);
 
     AsciiFilter ascii;
+    StainedGlassFilter stainedGlass;
 
     AppState state;
-    state.filter = &ascii;
+    state.filters = {&ascii, &stainedGlass};
     glfwSetWindowUserPointer(window, &state);
 
     Shader sceneShader("scene.vert", "scene.frag");
@@ -164,7 +170,7 @@ int main(int argc, char **argv)
       glDisable(GL_DEPTH_TEST);
       glBindVertexArray(emptyVao);
 
-      state.filter->prepare(sceneFbo.colorTexture(), state.canvasSize);
+      state.filter()->prepare(sceneFbo.colorTexture(), state.canvasSize);
     };
 
     double lastTime = glfwGetTime();
@@ -191,7 +197,7 @@ int main(int argc, char **argv)
       float contentAspect = state.useImage
                                 ? static_cast<float>(image.width()) / image.height()
                                 : static_cast<float>(windowWidth) / windowHeight;
-      glm::ivec2 canvasSize = state.filter->canvasSize(contentAspect, maxTexture);
+      glm::ivec2 canvasSize = state.filter()->canvasSize(contentAspect, maxTexture);
       if (canvasSize != state.canvasSize)
       {
         state.canvasSize = canvasSize;
@@ -206,8 +212,8 @@ int main(int argc, char **argv)
       if (state.exportRequested)
       {
         state.exportRequested = false;
-        state.filter->warnExport(canvasSize);
-        state.filter->renderExport(canvasFbo, sceneFbo.colorTexture());
+        state.filter()->warnExport(canvasSize);
+        state.filter()->renderExport(canvasFbo, sceneFbo.colorTexture());
 
         std::string path = timestampedPngName();
         if (writePng(canvasFbo, path))
@@ -216,7 +222,7 @@ int main(int argc, char **argv)
         }
       }
 
-      state.filter->render(canvasFbo, sceneFbo.colorTexture());
+      state.filter()->render(canvasFbo, sceneFbo.colorTexture());
 
       // Present pass -> window, canvas fitted with bars
       Framebuffer::unbind();
@@ -246,7 +252,7 @@ int main(int argc, char **argv)
         }
         else
         {
-          state.filter->warnExport(canvasSize);
+          state.filter()->warnExport(canvasSize);
           std::string path = timestampedGifName();
           GifExporter gif(path, canvasSize.x, canvasSize.y);
           if (!gif.ok())
@@ -255,13 +261,13 @@ int main(int argc, char **argv)
           }
           else
           {
-            state.filter->beginExport();
+            state.filter()->beginExport();
             const int count = image.frameCount();
             bool failed = false;
             for (int frame = 0; frame < count && !failed; ++frame)
             {
               renderFrame(frame);
-              state.filter->renderExport(canvasFbo, sceneFbo.colorTexture());
+              state.filter()->renderExport(canvasFbo, sceneFbo.colorTexture());
               // Viewers ignore delays under 2 hundredths of a second.
               int delay = std::max(2, static_cast<int>(std::lround(image.frameDuration(frame) * 100.0)));
               failed = !gif.addFrame(canvasFbo, delay);
@@ -269,7 +275,7 @@ int main(int argc, char **argv)
               std::cout << "\rExporting GIF: frame " << frame + 1 << "/" << count << std::flush;
             }
             gif.finish();
-            state.filter->endExport();
+            state.filter()->endExport();
 
             std::cout << (failed ? "\nExport failed: " : "\nExported ") << path << " (" << canvasSize.x << "x"
                       << canvasSize.y << ", " << count << " frames)" << std::endl;
@@ -330,6 +336,13 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
       }
       return;
     }
+    else if (key == GLFW_KEY_TAB)
+    {
+      state->activeFilter = (state->activeFilter + 1) % state->filters.size();
+      // The title is refreshed next frame, once the new filter has sized itself.
+      state->canvasSize = glm::ivec2(0, 0);
+      return;
+    }
     else if (key == GLFW_KEY_E)
     {
       state->exportRequested = true;
@@ -343,7 +356,7 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
   }
 
   // Everything else belongs to the active filter.
-  if (state->filter->onKey(key, action))
+  if (state->filter()->onKey(key, action))
   {
     updateTitle(window, *state);
   }

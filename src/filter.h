@@ -14,6 +14,8 @@ class Filter
 public:
   virtual ~Filter() = default;
 
+  virtual const char *name() const = 0;
+
   // Pixel size of the canvas for content of the given aspect ratio (width / height).
   // The source is drawn at this size too.
   virtual glm::ivec2 canvasSize(float aspect, int maxTexture) = 0;
