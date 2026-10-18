@@ -130,20 +130,27 @@ void main()
       }
     }
 
-    // Total weight of each group, keeping the top two.
+    // Total weight of each group, keeping the top two. A group is summed once, at
+    // its first site; the sites it takes are then marked used (ids are never negative).
     float w1 = 0.0, w2 = 0.0;
     vec2 g1 = vec2(0.0), g2 = vec2(0.0);
     float id1 = -1.0;
     for (int k = 0; k < 25; ++k)
     {
+      float id = ids[k];
+      if (id < 0.0)
+      {
+        continue;
+      }
       float sumW = 0.0;
       vec2 sumG = vec2(0.0);
-      for (int m = 0; m < 25; ++m)
+      for (int m = k; m < 25; ++m)
       {
-        if (ids[m] == ids[k])
+        if (ids[m] == id)
         {
           sumW += w[m];
           sumG += grad[m];
+          ids[m] = -2.0;
         }
       }
       if (sumW > w1)
@@ -152,9 +159,9 @@ void main()
         g2 = g1;
         w1 = sumW;
         g1 = sumG;
-        id1 = ids[k];
+        id1 = id;
       }
-      else if (ids[k] != id1 && sumW > w2)
+      else if (id != id1 && sumW > w2)
       {
         w2 = sumW;
         g2 = sumG;
@@ -201,10 +208,9 @@ void main()
     source = uGrouped ? groupMeanOf(siteCell) : paneColor(site);
   }
 
-  vec3 glass;
   // Richer color, a little brightness variation per pane, brighter toward the center.
   float luma = dot(source, vec3(0.299, 0.587, 0.114));
-  glass = mix(vec3(luma), source, 1.3);
+  vec3 glass = mix(vec3(luma), source, 1.3);
   if (uColorMode == MODE_ANSI256)
   {
     glass = quantizeAnsi256(clamp(glass, 0.0, 1.0));

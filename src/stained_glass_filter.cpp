@@ -15,13 +15,20 @@ static const int kDefaultPanes = 40;
 static const int kMinPanes = 8;
 static const int kMaxPanes = 160;
 
+static const int kPaneStep = 4;
+
 static const float kDefaultLead = 0.05f;
+static const float kMaxLead = 0.2f;
+static const float kLeadStep = 0.005f;
+
 static const float kMaxMerge = 0.6f;
+static const float kMergeStep = 0.02f;
 
 // Gaussian radius, in panes, for rounding off the borders between groups. Past
 // about 0.8 the 5x5 neighborhood the shader searches starts to cut it off.
 static const float kDefaultSmooth = 0.4f;
 static const float kMaxSmooth = 0.8f;
+static const float kSmoothStep = 0.05f;
 
 // How far a pair's merge threshold moves in favor of last frame's grouping.
 static const float kHysteresis = 0.25f;
@@ -69,7 +76,7 @@ glm::ivec2 StainedGlassFilter::canvasSize(float aspect, int maxTexture)
   return size_;
 }
 
-void StainedGlassFilter::prepare(GLuint scene, const glm::ivec2 &canvasSize)
+void StainedGlassFilter::prepare(GLuint scene, const glm::ivec2 &)
 {
   const float cellPx = static_cast<float>(size_.x) / panesAcross_;
   paneGrid_ = glm::ivec2(panesAcross_, std::max(1, static_cast<int>(std::ceil(size_.y / cellPx - 1e-4f))));
@@ -89,14 +96,14 @@ void StainedGlassFilter::prepare(GLuint scene, const glm::ivec2 &canvasSize)
   glDrawArrays(GL_TRIANGLES, 0, 3);
 
   const size_t count = static_cast<size_t>(paneGrid_.x) * paneGrid_.y;
-  std::vector<uint8_t> pixels(count * 4);
+  pixels_.resize(count * 4);
   glBindTexture(GL_TEXTURE_2D, paneFbo_.colorTexture());
-  glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
 
   paneColors_.resize(count);
   for (size_t i = 0; i < count; ++i)
   {
-    paneColors_[i] = glm::vec3(pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2]) / 255.0f;
+    paneColors_[i] = glm::vec3(pixels_[i * 4], pixels_[i * 4 + 1], pixels_[i * 4 + 2]) / 255.0f;
   }
 
   // Hysteresis needs last frame's groups on the same grid and threshold.
@@ -149,25 +156,25 @@ bool StainedGlassFilter::onKey(int key, int action)
   // All adjust on key repeat too, so holding the key sweeps them.
   if (key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET)
   {
-    int delta = key == GLFW_KEY_RIGHT_BRACKET ? 4 : -4;
+    int delta = key == GLFW_KEY_RIGHT_BRACKET ? kPaneStep : -kPaneStep;
     panesAcross_ = glm::clamp(panesAcross_ + delta, kMinPanes, kMaxPanes);
     return true;
   }
   if (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN)
   {
-    float delta = key == GLFW_KEY_UP ? 0.005f : -0.005f;
-    lead_ = glm::clamp(lead_ + delta, 0.0f, 0.2f);
+    float delta = key == GLFW_KEY_UP ? kLeadStep : -kLeadStep;
+    lead_ = glm::clamp(lead_ + delta, 0.0f, kMaxLead);
     return true;
   }
   if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_LEFT)
   {
-    float delta = key == GLFW_KEY_RIGHT ? 0.02f : -0.02f;
+    float delta = key == GLFW_KEY_RIGHT ? kMergeStep : -kMergeStep;
     merge_ = glm::clamp(merge_ + delta, 0.0f, kMaxMerge);
     return true;
   }
   if (key == GLFW_KEY_MINUS || key == GLFW_KEY_EQUAL)
   {
-    float delta = key == GLFW_KEY_EQUAL ? 0.05f : -0.05f;
+    float delta = key == GLFW_KEY_EQUAL ? kSmoothStep : -kSmoothStep;
     smooth_ = glm::clamp(smooth_ + delta, 0.0f, kMaxSmooth);
     return true;
   }

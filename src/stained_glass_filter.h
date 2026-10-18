@@ -42,6 +42,7 @@ private:
   GLuint labelTexture_ = 0;  // one RGBA32F texel per pane: group id, then the group's mean color
   glm::ivec2 paneGrid_{1, 1};
   bool grouped_ = false;
+  std::vector<uint8_t> pixels_;  // pane pass readback, kept to avoid reallocating each frame
   std::vector<glm::vec3> paneColors_;
   std::vector<int> group_;
   std::vector<int> previousGroup_;  // last frame's groups, for hysteresis
